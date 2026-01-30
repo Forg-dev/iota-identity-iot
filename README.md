@@ -48,7 +48,7 @@ This project demonstrates how **IOTA Rebased** can replace traditional PKI (Cert
 
 ## IOTA Rebased vs Stardust
 
-⚠️ **IMPORTANT**: This project uses **IOTA Rebased** APIs, NOT the older Stardust APIs.
+**IMPORTANT**: This project uses **IOTA Rebased** APIs, NOT the older Stardust APIs.
 
 | Component | Stardust (OLD) | Rebased (NEW) |
 |-----------|---------------|---------------|
