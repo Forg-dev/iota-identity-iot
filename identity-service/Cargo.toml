@@ -1,0 +1,62 @@
+[package]
+name = "identity-service"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Identity Service backend for IOTA Rebased IoT authentication"
+
+[[bin]]
+name = "identity-service"
+path = "src/main.rs"
+
+[dependencies]
+# Internal crate
+shared = { path = "../shared" }
+
+# IOTA Rebased (from GitHub, NOT crates.io!)
+identity_iota.workspace = true
+identity_stronghold.workspace = true
+iota-sdk.workspace = true
+iota_stronghold.workspace = true
+
+# Async runtime
+tokio.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+
+# Web framework
+axum.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+hyper.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Caching
+moka.workspace = true
+
+# Cryptography
+ed25519-dalek.workspace = true
+rand.workspace = true
+hex.workspace = true
+base64.workspace = true
+
+# Error handling & logging
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# Time & utils
+chrono.workspace = true
+uuid.workspace = true
+url.workspace = true
+reqwest.workspace = true
+parking_lot.workspace = true
+
+[dev-dependencies]
+tokio-test.workspace = true
+tempfile.workspace = true

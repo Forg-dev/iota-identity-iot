@@ -1,0 +1,64 @@
+[package]
+name = "device-client"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Device client for IOTA Rebased IoT authentication"
+
+[[bin]]
+name = "device-client"
+path = "src/main.rs"
+
+[dependencies]
+# Internal crate
+shared = { path = "../shared" }
+
+# IOTA Rebased
+identity_iota.workspace = true
+identity_stronghold.workspace = true
+iota-sdk.workspace = true
+iota-stronghold.workspace = true # Changed the -
+
+# Async runtime
+tokio.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+
+# TLS
+rustls.workspace = true
+tokio-rustls.workspace = true
+rcgen.workspace = true
+webpki-roots.workspace = true
+x509-parser.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Caching
+moka.workspace = true
+
+# Cryptography
+ed25519-dalek.workspace = true
+rand.workspace = true
+hex.workspace = true
+base64.workspace = true
+sha2.workspace = true
+
+# Error handling & logging
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# Utils
+chrono.workspace = true
+uuid.workspace = true
+url.workspace = true
+reqwest.workspace = true
+parking_lot.workspace = true
+
+[dev-dependencies]
+tokio-test.workspace = true
+tempfile.workspace = true

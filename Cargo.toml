@@ -1,0 +1,140 @@
+# =============================================================================
+# IOTA Identity for IoT - Workspace Root
+# =============================================================================
+# Blockchain-based PKI replacement for IoT device authentication
+# Using IOTA Rebased with DID and Verifiable Credentials
+# =============================================================================
+
+[workspace]
+resolver = "2"
+members = [
+    "shared",
+    "identity-service",
+    "device-client",
+]
+
+# =============================================================================
+# SHARED DEPENDENCIES - Versioni pinnate per riproducibilità
+# =============================================================================
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Forg-dev"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/yourusername/iota-identity-iot"
+
+[workspace.dependencies]
+# -----------------------------------------------------------------------------
+# IOTA REBASED IDENTITY
+# Repository: https://github.com/iotaledger/identity (branch: main)
+# IMPORTANTE: Usare SEMPRE git dependency, NON crates.io (che è Stardust)
+# -----------------------------------------------------------------------------
+identity_iota = { git = "https://github.com/iotaledger/identity", branch = "main" }
+identity_stronghold = { git = "https://github.com/iotaledger/identity", branch = "main" }
+
+# -----------------------------------------------------------------------------
+# IOTA REBASED SDK 
+# Repository: https://github.com/iotaledger/iota
+# IMPORTANTE: Questo è il NUOVO SDK per Rebased, non il vecchio iota-sdk
+# -----------------------------------------------------------------------------
+iota-sdk = { git = "https://github.com/iotaledger/iota", package = "iota-sdk" }
+
+# -----------------------------------------------------------------------------
+# STRONGHOLD - Secure key storage
+# -----------------------------------------------------------------------------
+#iota_stronghold = { git = "https://github.com/iotaledger/secret-storage.git", branch = "develop" }
+
+iota-stronghold = "2.1"
+
+# -----------------------------------------------------------------------------
+# ASYNC RUNTIME
+# -----------------------------------------------------------------------------
+tokio = { version = "1.35", features = ["full", "rt-multi-thread", "macros", "time", "sync"] }
+async-trait = "0.1"
+futures = "0.3"
+
+# -----------------------------------------------------------------------------
+# WEB FRAMEWORK (Identity Service)
+# -----------------------------------------------------------------------------
+axum = { version = "0.7", features = ["macros", "ws"] }
+tower = { version = "0.4", features = ["full"] }
+tower-http = { version = "0.5", features = ["cors", "trace", "compression-gzip"] }
+hyper = { version = "1.0", features = ["full"] }
+
+# -----------------------------------------------------------------------------
+# TLS (Device Client)
+# -----------------------------------------------------------------------------
+rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
+tokio-rustls = "0.26"
+rcgen = "0.13"
+webpki-roots = "0.26"
+x509-parser = "0.16"
+
+# -----------------------------------------------------------------------------
+# SERIALIZATION
+# -----------------------------------------------------------------------------
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# -----------------------------------------------------------------------------
+# CACHING
+# -----------------------------------------------------------------------------
+moka = { version = "0.12", features = ["future", "sync"] }
+
+# -----------------------------------------------------------------------------
+# CRYPTOGRAPHY
+# -----------------------------------------------------------------------------
+ed25519-dalek = { version = "2.1", features = ["serde", "rand_core"] }
+rand = "0.8"
+sha2 = "0.10"
+base64 = "0.22"
+hex = "0.4"
+
+# -----------------------------------------------------------------------------
+# ERROR HANDLING & LOGGING
+# -----------------------------------------------------------------------------
+anyhow = "1.0"
+thiserror = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# -----------------------------------------------------------------------------
+# TIME & UTILS
+# -----------------------------------------------------------------------------
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.6", features = ["v4", "serde"] }
+url = { version = "2.5", features = ["serde"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+parking_lot = "0.12"
+
+# -----------------------------------------------------------------------------
+# BENCHMARKING & METRICS
+# -----------------------------------------------------------------------------
+criterion = { version = "0.5", features = ["async_tokio"] }
+hdrhistogram = "7.5"
+prometheus = "0.13"
+
+# -----------------------------------------------------------------------------
+# TESTING
+# -----------------------------------------------------------------------------
+tokio-test = "0.4"
+tempfile = "3.10"
+mockall = "0.12"
+
+# =============================================================================
+# BUILD PROFILES
+# =============================================================================
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+[profile.bench]
+inherits = "release"
+debug = true

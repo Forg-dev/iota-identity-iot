@@ -1,0 +1,44 @@
+# Rust
+target/
+**/*.rs.bk
+*.pdb
+
+# Environment files
+.env
+.env.local
+**/.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Test data and results
+test-data/
+results/
+*.db
+*.sqlite
+
+# Benchmark outputs
+*.csv
+benchmarks/output/
+
+# Credentials (security)
+*.key
+*.pem
+*.crt
+*.pfx
+
+# Build artifacts
+dist/
+build/

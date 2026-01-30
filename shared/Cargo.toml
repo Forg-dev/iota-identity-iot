@@ -1,0 +1,45 @@
+[package]
+name = "shared"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Shared types, errors, and utilities for IOTA Identity IoT system"
+
+[dependencies]
+# IOTA Rebased
+identity_iota.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Error handling
+thiserror.workspace = true
+anyhow.workspace = true
+
+# Cryptography
+ed25519-dalek.workspace = true
+hex.workspace = true
+base64.workspace = true
+
+# Time & Utils
+chrono.workspace = true
+uuid.workspace = true
+url.workspace = true
+
+# Logging
+tracing.workspace = true
+
+[dev-dependencies]
+tokio-test.workspace = true
+
+
+
+
+
+
+
+
+
+
