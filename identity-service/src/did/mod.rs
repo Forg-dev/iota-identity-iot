@@ -10,7 +10,6 @@ use anyhow::{Context, Result};
 use parking_lot::RwLock;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
-use identity_iota::core::ToJson;
 
 // =============================================================================
 // IOTA REBASED IMPORTS
@@ -33,14 +32,12 @@ use identity_iota::verification::MethodScope;
 
 // IOTA Rebased clients
 use identity_iota::iota::rebased::client::{IdentityClient, IdentityClientReadOnly};
-use identity_iota::verification::jwu;
 
 // Faucet utility for testnet/devnet
 use identity_iota::iota::rebased::utils::request_funds;
 
 // IotaClientBuilder via re-export
 use identity_iota::iota_interaction::IotaClientBuilder;
-use identity_iota::iota_interaction::types::base_types::IotaAddress;
 
 // StorageSigner and traits
 use identity_storage::{KeyType, StorageSigner, JwkStorage};
@@ -146,7 +143,7 @@ impl DIDManager {
             "Creating new DID for device on IOTA Rebased"
         );
 
-        // Validate public key
+        // Step 1: Validate public key
         let public_key_bytes = hex::decode(public_key_hex)
             .map_err(|e| IdentityError::InvalidPublicKey(e.to_string()))?;
 
@@ -158,7 +155,7 @@ impl DIDManager {
 
         debug!("Public key validated");
 
-        // Step 1: Generate a signing key for the transaction
+        // Step 2: Generate a signing key for the transaction
         let generate_result = self.storage
             .key_storage()
             .generate(KeyType::new("Ed25519"), JwsAlgorithm::EdDSA)
@@ -174,56 +171,14 @@ impl DIDManager {
                 "Failed to derive public key from JWK".into()
             ))?;
 
-        // Step 2: Create StorageSigner
+        // Step 3: Create StorageSigner
         let signer = StorageSigner::new(
             self.storage.as_ref(),
             generate_result.key_id,
             public_key_jwk,
         );
 
-        // Step 3: Get sender address from JWK
-        let public_jwk = signer.public_key_jwk();
-        let okp_params = public_jwk.try_okp_params()
-            .map_err(|e| IdentityError::DIDCreationError(format!(
-                "Invalid JWK params: {}", e
-            )))?;
-        
-        let public_key_b64 = &okp_params.x;
-        let pk_bytes = jwu::decode_b64(public_key_b64)
-            .map_err(|e| IdentityError::DIDCreationError(format!(
-                "Failed to decode public key: {}", e
-            )))?;
-
-        // Derive IotaAddress: hash(flag || public_key)
-        use sha2::{Sha256, Digest};
-        let mut hasher = Sha256::new();
-        hasher.update([0x00]); // Ed25519 signature scheme flag
-        hasher.update(&pk_bytes);
-        let hash = hasher.finalize();
-        
-        let addr_bytes: [u8; 32] = hash[..32].try_into().unwrap();
-        let sender_address = IotaAddress::from_bytes(addr_bytes)
-            .map_err(|e| IdentityError::DIDCreationError(format!(
-                "Failed to create address: {:?}", e
-            )))?;
-
-        info!(sender_address = %sender_address, "Requesting funds from faucet");
-
-        // Step 4: Request funds from faucet
-        if self.network.has_faucet() {
-            request_funds(&sender_address)
-                .await
-                .map_err(|e| IdentityError::FaucetError(format!(
-                    "Failed to request funds: {}", e
-                )))?;
-
-            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-            debug!("Funds received from faucet");
-        } else {
-            warn!("No faucet available for network {:?}", self.network);
-        }
-
-        // Step 5: Build IOTA client for publishing
+        // Step 4: Build IOTA client for publishing
         let iota_client = IotaClientBuilder::default()
             .build(&self.endpoint)
             .await
@@ -242,14 +197,35 @@ impl DIDManager {
                 "Failed to create read-only client: {}", e
             )))?;
 
-        // Step 6: Create full IdentityClient with signer
+        // Step 5: Create full IdentityClient with signer
         let identity_client = IdentityClient::new(read_client, signer)
             .await
             .map_err(|e| IdentityError::DIDCreationError(format!(
                 "Failed to create identity client: {}", e
             )))?;
 
-        // Step 7: Create unpublished DID Document
+        // Step 6: Get the CORRECT sender address from IdentityClient
+        let sender_address = identity_client.address();
+        
+        info!(sender_address = %sender_address, "Requesting funds from faucet");
+
+        // Step 7: Request funds from faucet
+        if self.network.has_faucet() {
+            request_funds(&sender_address)
+                .await
+                .map_err(|e| IdentityError::FaucetError(format!(
+                    "Failed to request funds: {}", e
+                )))?;
+
+            // Wait for funds to be confirmed on chain
+            info!("Waiting for faucet transaction confirmation...");
+            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+            debug!("Funds should be available now");
+        } else {
+            warn!("No faucet available for network {:?}", self.network);
+        }
+
+        // Step 8: Create unpublished DID Document
         let network_name = identity_client.network();
         let mut unpublished_doc = IotaDocument::new(network_name);
 
@@ -268,7 +244,7 @@ impl DIDManager {
 
         debug!(fragment = %fragment, "Verification method generated");
 
-        // Step 8: Publish DID Document to blockchain
+        // Step 9: Publish DID Document to blockchain
         info!("Publishing DID Document to IOTA Rebased...");
         
         let published_doc = identity_client
