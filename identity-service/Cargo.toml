@@ -16,9 +16,8 @@ shared = { path = "../shared" }
 
 # IOTA Rebased (from GitHub, NOT crates.io!)
 identity_iota.workspace = true
-identity_stronghold.workspace = true
-iota-sdk.workspace = true
-iota_stronghold.workspace = true
+# identity_stronghold commented out - using JwkMemStore/KeyIdMemstore instead
+# identity_stronghold.workspace = true
 
 # Async runtime
 tokio.workspace = true
@@ -56,6 +55,7 @@ uuid.workspace = true
 url.workspace = true
 reqwest.workspace = true
 parking_lot.workspace = true
+urlencoding.workspace = true
 
 [dev-dependencies]
 tokio-test.workspace = true

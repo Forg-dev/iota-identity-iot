@@ -7,12 +7,9 @@
 //!
 //! Uses IOTA Stronghold for secure key management.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::path::PathBuf;
 use tracing::{debug, info};
-
-use identity_stronghold::StrongholdStorage;
-use iota_stronghold::Stronghold;
 
 use shared::{
     config::StorageConfig,

@@ -15,7 +15,7 @@
 use chrono::{Duration, Utc};
 use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use shared::{
     config::CredentialConfig,
@@ -241,7 +241,7 @@ impl CredentialIssuer {
         ))?;
 
         let signature = ed25519_dalek::Signature::from_slice(&signature_bytes)
-            .map_err(|e| IdentityError::InvalidSignature)?;
+            .map_err(|_e| IdentityError::InvalidSignature)?;
 
         // Verify
         public_key.verify_strict(canonical.as_bytes(), &signature)

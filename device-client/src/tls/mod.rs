@@ -27,7 +27,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info};
 
 use rustls::{
     ClientConfig, ServerConfig,
@@ -38,7 +38,6 @@ use rcgen::{generate_simple_self_signed, CertifiedKey};
 
 use shared::{
     config::TlsConfig,
-    constants::*,
     error::{IdentityError, IdentityResult},
     types::{DIDAuthMessage, DIDAuthMessageType},
 };
@@ -165,7 +164,7 @@ impl TlsClient {
     /// Verify peer's DID and credential
     async fn verify_peer(&self, message: &DIDAuthMessage) -> IdentityResult<()> {
         // Resolve peer's DID from blockchain
-        let did_document = self.resolver.resolve(&message.did).await?;
+        let _did_document = self.resolver.resolve(&message.did).await?;
 
         // In a full implementation, we would:
         // 1. Verify the credential JWT signature

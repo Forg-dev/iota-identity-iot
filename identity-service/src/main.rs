@@ -35,7 +35,7 @@ use shared::config::IdentityServiceConfig;
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize logging
-    let subscriber = FmtSubscriber::builder()
+    FmtSubscriber::builder()
         .with_max_level(Level::INFO)
         .with_target(true)
         .with_thread_ids(true)
@@ -56,12 +56,10 @@ async fn main() -> Result<()> {
 
     // Initialize components
     info!("Initializing DID Manager...");
-    let did_manager = DIDManager::new(&config).await?;
-    let did_manager = Arc::new(did_manager);
+    let did_manager = Arc::new(DIDManager::new(&config).await?);
 
     info!("Initializing Cache Manager...");
-    let cache = CacheManager::new(&config.cache);
-    let cache = Arc::new(cache);
+    let cache = Arc::new(CacheManager::new(&config.cache));
 
     info!("Initializing Credential Issuer...");
     let credential_issuer = CredentialIssuer::new(
@@ -69,24 +67,16 @@ async fn main() -> Result<()> {
         config.credential.clone(),
     ).await?;
 
-    // Create application state
+    // Create application state (using Arc for non-Clone types)
     let state = Arc::new(AppState {
         config: config.clone(),
-        did_manager: Arc::try_unwrap(did_manager).unwrap_or_else(|arc| (*arc).clone()),
+        did_manager: Arc::clone(&did_manager),
         credential_issuer,
-        cache: Arc::try_unwrap(cache).unwrap_or_else(|arc| (*arc).clone()),
+        cache: Arc::clone(&cache),
     });
 
-    // Create router
-    let app = api::create_router(Arc::new(AppState {
-        config: config.clone(),
-        did_manager: DIDManager::new(&config).await?,
-        credential_issuer: CredentialIssuer::new(
-            Arc::new(DIDManager::new(&config).await?),
-            config.credential.clone(),
-        ).await?,
-        cache: CacheManager::new(&config.cache),
-    }));
+    // Create router with shared state
+    let app = api::create_router(state);
 
     // Start server
     let bind_addr = config.api.bind_addr();

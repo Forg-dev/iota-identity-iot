@@ -27,10 +27,10 @@ use shared::config::IdentityServiceConfig;
 pub struct AppState {
     /// Configuration
     pub config: IdentityServiceConfig,
-    /// DID Manager for IOTA Rebased operations
-    pub did_manager: did::DIDManager,
+    /// DID Manager for IOTA Rebased operations (wrapped in Arc - not Clone)
+    pub did_manager: std::sync::Arc<did::DIDManager>,
     /// Credential Issuer
     pub credential_issuer: credential::CredentialIssuer,
-    /// Cache layer
-    pub cache: cache::CacheManager,
+    /// Cache layer (wrapped in Arc - not Clone)
+    pub cache: std::sync::Arc<cache::CacheManager>,
 }

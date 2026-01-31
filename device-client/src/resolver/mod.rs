@@ -15,14 +15,15 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
-// IOTA Rebased imports
+// IOTA Rebased imports (correct path)
 use identity_iota::iota::{IotaDocument, IotaDID};
-use identity_iota::iota_interaction::IdentityClientReadOnly;
-use iota_sdk::IotaClientBuilder;
+use identity_iota::iota::rebased::client::IdentityClientReadOnly;
+
+// Use re-export to avoid iota-sdk version conflict
+use identity_iota::iota_interaction::IotaClientBuilder;
 
 use shared::{
     config::DeviceClientConfig,
-    constants::*,
     error::{IdentityError, IdentityResult},
     types::SimplifiedDIDDocument,
 };

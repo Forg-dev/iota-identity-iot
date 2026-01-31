@@ -20,32 +20,26 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-authors = ["Forg-dev"]
+authors = ["Your Name <your.email@example.com>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/yourusername/iota-identity-iot"
 
 [workspace.dependencies]
 # -----------------------------------------------------------------------------
-# IOTA REBASED IDENTITY
+# IOTA REBASED IDENTITY (NON Stardust!)
 # Repository: https://github.com/iotaledger/identity (branch: main)
 # IMPORTANTE: Usare SEMPRE git dependency, NON crates.io (che è Stardust)
+# NOTA: "memstore" abilita JwkMemStore/KeyIdMemstore per testing
+# NOTA: identity_iota re-esporta iota_interaction, che contiene IotaClientBuilder
+#       NON importare iota-sdk direttamente per evitare conflitti di versione!
 # -----------------------------------------------------------------------------
-identity_iota = { git = "https://github.com/iotaledger/identity", branch = "main" }
-identity_stronghold = { git = "https://github.com/iotaledger/identity", branch = "main" }
+identity_iota = { git = "https://github.com/iotaledger/identity", branch = "main", features = ["memstore"] }
+identity_stronghold = { git = "https://github.com/iotaledger/identity", branch = "main", features = ["send-sync-storage"] }
 
 # -----------------------------------------------------------------------------
-# IOTA REBASED SDK 
-# Repository: https://github.com/iotaledger/iota
-# IMPORTANTE: Questo è il NUOVO SDK per Rebased, non il vecchio iota-sdk
+# STRONGHOLD - Secure key storage (NON necessario come dipendenza diretta,
+# identity_stronghold lo re-esporta)
 # -----------------------------------------------------------------------------
-iota-sdk = { git = "https://github.com/iotaledger/iota", package = "iota-sdk" }
-
-# -----------------------------------------------------------------------------
-# STRONGHOLD - Secure key storage
-# -----------------------------------------------------------------------------
-#iota_stronghold = { git = "https://github.com/iotaledger/secret-storage.git", branch = "develop" }
-
-iota-stronghold = "2.1"
 
 # -----------------------------------------------------------------------------
 # ASYNC RUNTIME
@@ -107,6 +101,8 @@ uuid = { version = "1.6", features = ["v4", "serde"] }
 url = { version = "2.5", features = ["serde"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 parking_lot = "0.12"
+urlencoding = "2.1"
+clap = { version = "4.4", features = ["derive"] }
 
 # -----------------------------------------------------------------------------
 # BENCHMARKING & METRICS

@@ -15,7 +15,6 @@ use tracing::{debug, info};
 
 use shared::{
     config::CacheConfig,
-    error::{IdentityError, IdentityResult},
     types::{DeviceCredential, SimplifiedDIDDocument},
 };
 

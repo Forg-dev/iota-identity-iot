@@ -21,9 +21,8 @@
 
 use anyhow::{Context, Result};
 use parking_lot::RwLock;
-use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 // =============================================================================
 // IOTA REBASED IMPORTS (CORRECT - NOT STARDUST!)
@@ -34,9 +33,9 @@ use identity_iota::iota::{IotaDocument, IotaDID};
 
 // Storage for cryptographic operations
 use identity_iota::storage::{
-    JwkDocumentExt, 
-    JwkMemStore, 
-    KeyIdMemstore, 
+    JwkDocumentExt,
+    JwkMemStore,
+    KeyIdMemstore,
     Storage,
 };
 
@@ -44,19 +43,16 @@ use identity_iota::storage::{
 use identity_iota::verification::jws::JwsAlgorithm;
 use identity_iota::verification::MethodScope;
 
-// IOTA Rebased interaction (NEW API)
-// Note: These are from identity_iota::iota_interaction, NOT the old iota module
-use identity_iota::iota_interaction::{
-    IdentityClientReadOnly,
-    IotaClientTrait,
-};
+// IOTA Rebased client (correct path from compiler)
+use identity_iota::iota::rebased::client::IdentityClientReadOnly;
 
-// IOTA SDK for Rebased (from github.com/iotaledger/iota, NOT crates.io)
-use iota_sdk::IotaClientBuilder;
+// IotaClientBuilder via re-export (avoids version conflict!)
+use identity_iota::iota_interaction::IotaClientBuilder;
 
-// Stronghold for secure key storage
-use identity_stronghold::StrongholdStorage;
-use iota_stronghold::Stronghold;
+// Storage for cryptographic keys
+// NOTE: Using in-memory storage (JwkMemStore/KeyIdMemstore) for development.
+// For production, StrongholdStorage should be used once IOTA aligns
+// identity_stronghold dependencies with Rebased (currently uses Stardust iota-sdk 1.1.5)
 
 // Re-export shared types
 use shared::{
@@ -67,7 +63,8 @@ use shared::{
 };
 
 /// Type alias for the storage backend
-pub type IdentityStorage = Storage<StrongholdStorage, StrongholdStorage>;
+/// Using in-memory storage for development - see setup_storage() for details
+pub type IdentityStorage = Storage<JwkMemStore, KeyIdMemstore>;
 
 /// DID Manager for IOTA Rebased
 ///
@@ -142,8 +139,8 @@ impl DIDManager {
 
         debug!("Read-only identity client created");
 
-        // Step 3: Setup Stronghold storage for secure key management
-        let storage = Self::setup_stronghold_storage(config).await?;
+        // Step 3: Setup key storage (in-memory for development)
+        let storage = Self::setup_storage(config).await?;
 
         info!("DID Manager initialized successfully for IOTA Rebased");
 
@@ -157,28 +154,26 @@ impl DIDManager {
         })
     }
 
-    /// Setup Stronghold secure storage
-    async fn setup_stronghold_storage(config: &IdentityServiceConfig) -> Result<IdentityStorage> {
-        let stronghold_path = &config.storage.stronghold_path;
-        let password = config.storage.get_password()?;
+    /// Setup cryptographic key storage
+    /// 
+    /// NOTE: Currently using in-memory storage (JwkMemStore/KeyIdMemstore) for development.
+    /// This is because identity_stronghold depends on iota-sdk 1.1.5 (Stardust/crates.io)
+    /// which conflicts with IOTA Rebased APIs we use elsewhere.
+    /// 
+    /// For production deployment, StrongholdStorage should be used once IOTA Foundation
+    /// aligns the dependency versions. Keys stored in-memory are lost on restart.
+    /// 
+    /// TODO: Switch to StrongholdStorage when identity_stronghold updates to Rebased
+    async fn setup_storage(_config: &IdentityServiceConfig) -> Result<IdentityStorage> {
+        info!("Setting up in-memory key storage (development mode)");
+        warn!("Keys are stored in-memory and will be lost on restart!");
+        warn!("For production, use StrongholdStorage once dependencies are aligned");
 
-        info!(path = ?stronghold_path, "Setting up Stronghold storage");
+        // Create in-memory storage for JWK keys and key IDs
+        let jwk_store = JwkMemStore::new();
+        let key_id_store = KeyIdMemstore::new();
 
-        // Ensure directory exists
-        if let Some(parent) = stronghold_path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-
-        // Create Stronghold instance
-        let stronghold = Stronghold::default();
-        
-        // Create storage with Stronghold backend
-        let stronghold_storage = StrongholdStorage::new(stronghold);
-
-        Ok(Storage::new(
-            stronghold_storage.clone(),
-            stronghold_storage,
-        ))
+        Ok(Storage::new(jwk_store, key_id_store))
     }
 
     /// Create a new DID for a device on IOTA Rebased

@@ -17,8 +17,6 @@ shared = { path = "../shared" }
 # IOTA Rebased
 identity_iota.workspace = true
 identity_stronghold.workspace = true
-iota-sdk.workspace = true
-iota-stronghold.workspace = true # Changed the -
 
 # Async runtime
 tokio.workspace = true
@@ -58,6 +56,8 @@ uuid.workspace = true
 url.workspace = true
 reqwest.workspace = true
 parking_lot.workspace = true
+urlencoding.workspace = true
+clap.workspace = true
 
 [dev-dependencies]
 tokio-test.workspace = true
