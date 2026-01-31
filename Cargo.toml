@@ -33,13 +33,12 @@ repository = "https://github.com/yourusername/iota-identity-iot"
 # NOTA: identity_iota re-esporta iota_interaction, che contiene IotaClientBuilder
 #       NON importare iota-sdk direttamente per evitare conflitti di versione!
 # -----------------------------------------------------------------------------
-identity_iota = { git = "https://github.com/iotaledger/identity", branch = "main", features = ["memstore"] }
-identity_stronghold = { git = "https://github.com/iotaledger/identity", branch = "main", features = ["send-sync-storage"] }
-
-# -----------------------------------------------------------------------------
-# STRONGHOLD - Secure key storage (NON necessario come dipendenza diretta,
-# identity_stronghold lo re-esporta)
-# -----------------------------------------------------------------------------
+identity_iota = { git = "https://github.com/iotaledger/identity", branch = "main", features = ["memstore", "send-sync"] }
+identity_storage = { git = "https://github.com/iotaledger/identity", branch = "main" }
+# NOTE: identity_stronghold commented out - it depends on iota-sdk 1.1.5 (Stardust/crates.io)
+# which conflicts with IOTA Rebased APIs. Using JwkMemStore/KeyIdMemstore for now.
+# TODO: Uncomment when IOTA aligns identity_stronghold with Rebased
+# identity_stronghold = { git = "https://github.com/iotaledger/identity", branch = "main", features = ["send-sync-storage"] }
 
 # -----------------------------------------------------------------------------
 # ASYNC RUNTIME

@@ -5,27 +5,15 @@
 //! - Resolving existing DIDs
 //! - Updating DID Documents
 //! - Deactivating DIDs
-//!
-//! ## IMPORTANT: IOTA Rebased vs Stardust
-//!
-//! This implementation uses IOTA Rebased APIs which are completely different
-//! from the Stardust version. Key differences:
-//!
-//! | Stardust | Rebased |
-//! |----------|---------|
-//! | `IotaIdentityClient` | `IdentityClient` / `IdentityClientReadOnly` |
-//! | `Client::builder()` | `IotaClientBuilder::default()` |
-//! | Alias Outputs (UTXO) | Identity Objects (Move VM) |
-//! | Feeless | Gas required |
-//! | `iota-sdk` (crates.io) | `iota-sdk` (github.com/iotaledger/iota) |
 
 use anyhow::{Context, Result};
 use parking_lot::RwLock;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
+use identity_iota::core::ToJson;
 
 // =============================================================================
-// IOTA REBASED IMPORTS (CORRECT - NOT STARDUST!)
+// IOTA REBASED IMPORTS
 // =============================================================================
 
 // Core Identity types
@@ -43,38 +31,39 @@ use identity_iota::storage::{
 use identity_iota::verification::jws::JwsAlgorithm;
 use identity_iota::verification::MethodScope;
 
-// IOTA Rebased client (correct path from compiler)
-use identity_iota::iota::rebased::client::IdentityClientReadOnly;
+// IOTA Rebased clients
+use identity_iota::iota::rebased::client::{IdentityClient, IdentityClientReadOnly};
+use identity_iota::verification::jwu;
 
-// IotaClientBuilder via re-export (avoids version conflict!)
+// Faucet utility for testnet/devnet
+use identity_iota::iota::rebased::utils::request_funds;
+
+// IotaClientBuilder via re-export
 use identity_iota::iota_interaction::IotaClientBuilder;
+use identity_iota::iota_interaction::types::base_types::IotaAddress;
 
-// Storage for cryptographic keys
-// NOTE: Using in-memory storage (JwkMemStore/KeyIdMemstore) for development.
-// For production, StrongholdStorage should be used once IOTA aligns
-// identity_stronghold dependencies with Rebased (currently uses Stardust iota-sdk 1.1.5)
+// StorageSigner and traits
+use identity_storage::{KeyType, StorageSigner, JwkStorage};
 
 // Re-export shared types
 use shared::{
     config::{IdentityServiceConfig, IotaNetwork},
-    constants::*,
     error::{IdentityError, IdentityResult},
     types::DeviceIdentity,
 };
 
 /// Type alias for the storage backend
-/// Using in-memory storage for development - see setup_storage() for details
 pub type IdentityStorage = Storage<JwkMemStore, KeyIdMemstore>;
 
+/// Gas budget for publishing a new DID document (in IOTA nanos)
+const GAS_BUDGET_PUBLISH_DID: u64 = 50_000_000;
+
 /// DID Manager for IOTA Rebased
-///
-/// Handles all DID operations including creation, resolution, and management.
-/// Uses IOTA Rebased APIs (Move VM based) instead of the older Stardust APIs.
 pub struct DIDManager {
-    /// Read-only client for resolving DIDs (doesn't require signing)
+    /// Read-only client for resolving DIDs
     read_only_client: IdentityClientReadOnly,
     
-    /// Secure storage for cryptographic keys (Stronghold)
+    /// Secure storage for cryptographic keys
     storage: Arc<IdentityStorage>,
     
     /// Issuer's DID (this service's identity)
@@ -92,25 +81,6 @@ pub struct DIDManager {
 
 impl DIDManager {
     /// Create a new DID Manager for IOTA Rebased
-    ///
-    /// # Arguments
-    /// * `config` - Service configuration
-    ///
-    /// # Returns
-    /// A new DIDManager instance connected to IOTA Rebased
-    ///
-    /// # Example
-    /// ```rust,no_run
-    /// use identity_service::did::DIDManager;
-    /// use shared::config::IdentityServiceConfig;
-    ///
-    /// #[tokio::main]
-    /// async fn main() -> anyhow::Result<()> {
-    ///     let config = IdentityServiceConfig::from_env()?;
-    ///     let manager = DIDManager::new(&config).await?;
-    ///     Ok(())
-    /// }
-    /// ```
     pub async fn new(config: &IdentityServiceConfig) -> Result<Self> {
         let endpoint = config.endpoint().to_string();
         let package_id = config.package_id()?.to_string();
@@ -122,8 +92,6 @@ impl DIDManager {
             "Initializing DID Manager for IOTA Rebased"
         );
 
-        // Step 1: Build IOTA client using IotaClientBuilder (REBASED SDK)
-        // This is different from Stardust's Client::builder()
         let iota_client = IotaClientBuilder::default()
             .build(&endpoint)
             .await
@@ -131,15 +99,15 @@ impl DIDManager {
 
         debug!("IOTA Rebased client connected to {}", endpoint);
 
-        // Step 2: Create read-only identity client for resolving DIDs
-        // Note: For publishing, we need a full IdentityClient with signer
-        let read_only_client = IdentityClientReadOnly::new(iota_client)
+        let pkg_id = package_id.parse()
+            .context("Failed to parse package ID")?;
+
+        let read_only_client = IdentityClientReadOnly::new_with_pkg_id(iota_client, pkg_id)
             .await
             .context("Failed to create read-only identity client")?;
 
-        debug!("Read-only identity client created");
+        debug!("Read-only identity client created with package {}", package_id);
 
-        // Step 3: Setup key storage (in-memory for development)
         let storage = Self::setup_storage(config).await?;
 
         info!("DID Manager initialized successfully for IOTA Rebased");
@@ -154,22 +122,11 @@ impl DIDManager {
         })
     }
 
-    /// Setup cryptographic key storage
-    /// 
-    /// NOTE: Currently using in-memory storage (JwkMemStore/KeyIdMemstore) for development.
-    /// This is because identity_stronghold depends on iota-sdk 1.1.5 (Stardust/crates.io)
-    /// which conflicts with IOTA Rebased APIs we use elsewhere.
-    /// 
-    /// For production deployment, StrongholdStorage should be used once IOTA Foundation
-    /// aligns the dependency versions. Keys stored in-memory are lost on restart.
-    /// 
-    /// TODO: Switch to StrongholdStorage when identity_stronghold updates to Rebased
+    /// Setup cryptographic key storage (in-memory for development)
     async fn setup_storage(_config: &IdentityServiceConfig) -> Result<IdentityStorage> {
         info!("Setting up in-memory key storage (development mode)");
         warn!("Keys are stored in-memory and will be lost on restart!");
-        warn!("For production, use StrongholdStorage once dependencies are aligned");
 
-        // Create in-memory storage for JWK keys and key IDs
         let jwk_store = JwkMemStore::new();
         let key_id_store = KeyIdMemstore::new();
 
@@ -177,26 +134,6 @@ impl DIDManager {
     }
 
     /// Create a new DID for a device on IOTA Rebased
-    ///
-    /// This method:
-    /// 1. Creates an IotaDocument with verification methods
-    /// 2. Publishes it to IOTA Rebased via the Identity Move package
-    /// 3. Returns the created DeviceIdentity
-    ///
-    /// # Arguments
-    /// * `public_key_hex` - Device's Ed25519 public key (64 hex characters)
-    ///
-    /// # Returns
-    /// DeviceIdentity containing DID, public key, and object ID
-    ///
-    /// # IOTA Rebased Flow
-    /// ```text
-    /// 1. Create unpublished IotaDocument
-    /// 2. Add verification method with Ed25519 key
-    /// 3. Get funded IdentityClient (needs IOTA tokens for gas)
-    /// 4. Call publish_did_document() with gas budget
-    /// 5. DID is derived from the resulting object ID
-    /// ```
     pub async fn create_did(
         &self,
         public_key_hex: &str,
@@ -205,6 +142,7 @@ impl DIDManager {
     ) -> IdentityResult<DeviceIdentity> {
         info!(
             public_key_len = public_key_hex.len(),
+            device_type = ?device_type,
             "Creating new DID for device on IOTA Rebased"
         );
 
@@ -220,13 +158,101 @@ impl DIDManager {
 
         debug!("Public key validated");
 
-        // Get the network name from the read-only client
-        let network_name = self.read_only_client.network();
+        // Step 1: Generate a signing key for the transaction
+        let generate_result = self.storage
+            .key_storage()
+            .generate(KeyType::new("Ed25519"), JwsAlgorithm::EdDSA)
+            .await
+            .map_err(|e| IdentityError::DIDCreationError(format!(
+                "Failed to generate signing key: {}", e
+            )))?;
 
-        // Create unpublished DID Document
-        let mut unpublished_doc = IotaDocument::new(&network_name);
+        debug!("Transaction signing key generated");
 
-        // Generate and add verification method using storage
+        let public_key_jwk = generate_result.jwk.to_public()
+            .ok_or_else(|| IdentityError::DIDCreationError(
+                "Failed to derive public key from JWK".into()
+            ))?;
+
+        // Step 2: Create StorageSigner
+        let signer = StorageSigner::new(
+            self.storage.as_ref(),
+            generate_result.key_id,
+            public_key_jwk,
+        );
+
+        // Step 3: Get sender address from JWK
+        let public_jwk = signer.public_key_jwk();
+        let okp_params = public_jwk.try_okp_params()
+            .map_err(|e| IdentityError::DIDCreationError(format!(
+                "Invalid JWK params: {}", e
+            )))?;
+        
+        let public_key_b64 = &okp_params.x;
+        let pk_bytes = jwu::decode_b64(public_key_b64)
+            .map_err(|e| IdentityError::DIDCreationError(format!(
+                "Failed to decode public key: {}", e
+            )))?;
+
+        // Derive IotaAddress: hash(flag || public_key)
+        use sha2::{Sha256, Digest};
+        let mut hasher = Sha256::new();
+        hasher.update([0x00]); // Ed25519 signature scheme flag
+        hasher.update(&pk_bytes);
+        let hash = hasher.finalize();
+        
+        let addr_bytes: [u8; 32] = hash[..32].try_into().unwrap();
+        let sender_address = IotaAddress::from_bytes(addr_bytes)
+            .map_err(|e| IdentityError::DIDCreationError(format!(
+                "Failed to create address: {:?}", e
+            )))?;
+
+        info!(sender_address = %sender_address, "Requesting funds from faucet");
+
+        // Step 4: Request funds from faucet
+        if self.network.has_faucet() {
+            request_funds(&sender_address)
+                .await
+                .map_err(|e| IdentityError::FaucetError(format!(
+                    "Failed to request funds: {}", e
+                )))?;
+
+            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+            debug!("Funds received from faucet");
+        } else {
+            warn!("No faucet available for network {:?}", self.network);
+        }
+
+        // Step 5: Build IOTA client for publishing
+        let iota_client = IotaClientBuilder::default()
+            .build(&self.endpoint)
+            .await
+            .map_err(|e| IdentityError::DIDCreationError(format!(
+                "Failed to build IOTA client: {}", e
+            )))?;
+
+        let pkg_id = self.package_id.parse()
+            .map_err(|e| IdentityError::DIDCreationError(format!(
+                "Invalid package ID: {:?}", e
+            )))?;
+
+        let read_client = IdentityClientReadOnly::new_with_pkg_id(iota_client, pkg_id)
+            .await
+            .map_err(|e| IdentityError::DIDCreationError(format!(
+                "Failed to create read-only client: {}", e
+            )))?;
+
+        // Step 6: Create full IdentityClient with signer
+        let identity_client = IdentityClient::new(read_client, signer)
+            .await
+            .map_err(|e| IdentityError::DIDCreationError(format!(
+                "Failed to create identity client: {}", e
+            )))?;
+
+        // Step 7: Create unpublished DID Document
+        let network_name = identity_client.network();
+        let mut unpublished_doc = IotaDocument::new(network_name);
+
         let fragment = unpublished_doc
             .generate_method(
                 self.storage.as_ref(),
@@ -242,17 +268,21 @@ impl DIDManager {
 
         debug!(fragment = %fragment, "Verification method generated");
 
-        // To publish, we need a funded IdentityClient with signing capability
-        // This is a key difference from Stardust - we need gas!
-        let published_doc = self.publish_document(unpublished_doc).await?;
+        // Step 8: Publish DID Document to blockchain
+        info!("Publishing DID Document to IOTA Rebased...");
+        
+        let published_doc = identity_client
+            .publish_did_document(unpublished_doc)
+            .with_gas_budget(GAS_BUDGET_PUBLISH_DID)
+            .build_and_execute(&identity_client)
+            .await
+            .map_err(|e| IdentityError::DIDCreationError(format!(
+                "Failed to publish DID document: {}", e
+            )))?
+            .output;
 
         let did = published_doc.id().to_string();
-        
-        // Extract object ID from DID (format: did:iota:<object_id>)
-        let object_id = did
-            .strip_prefix(DID_PREFIX)
-            .unwrap_or(&did)
-            .to_string();
+        let object_id = published_doc.id().tag_str().to_string();
 
         info!(
             did = %did,
@@ -269,118 +299,13 @@ impl DIDManager {
         ))
     }
 
-    /// Publish a DID Document to IOTA Rebased
-    ///
-    /// This requires:
-    /// - A signing key (stored in Stronghold)
-    /// - IOTA tokens for gas
-    /// - The Identity Package ID
-    async fn publish_document(&self, document: IotaDocument) -> IdentityResult<IotaDocument> {
-        // For a full implementation, we need to:
-        // 1. Generate or load a signing key from Stronghold
-        // 2. Get the address from the signing key
-        // 3. Request funds from faucet (testnet/devnet)
-        // 4. Create a full IdentityClient with the signer
-        // 5. Call publish_did_document() with gas budget
-
-        // Note: This is a simplified version. In production, you'd implement
-        // the full signing flow with Stronghold.
-
-        // For now, we'll use a placeholder that shows the correct API structure
-        // The actual implementation requires async key management
-
-        /*
-        // Full implementation would look like:
-        let signer = self.get_or_create_signer().await?;
-        
-        let sender_address = IotaAddress::from(&signer.public_key().await?);
-        
-        // Request funds if on testnet/devnet
-        if self.network.has_faucet() {
-            self.request_faucet_funds(&sender_address).await?;
-        }
-        
-        // Create full identity client with signer
-        let iota_client = IotaClientBuilder::default()
-            .build(&self.endpoint)
-            .await?;
-            
-        let identity_client = IdentityClient::new(iota_client, signer).await?;
-        
-        // Publish with gas budget
-        let published = identity_client
-            .publish_did_document(document)
-            .with_gas_budget(GAS_BUDGET_PUBLISH_DID)
-            .build_and_execute(&identity_client)
-            .await
-            .map_err(|e| IdentityError::TransactionError(e.to_string()))?
-            .output;
-        
-        Ok(published)
-        */
-
-        // Placeholder - returns the document as-is
-        // In production, this would actually publish to the blockchain
-        warn!("publish_document: Using placeholder implementation");
-        Ok(document)
-    }
-
-    /// Request funds from the IOTA faucet (testnet/devnet only)
-    async fn request_faucet_funds(&self, address: &str) -> IdentityResult<()> {
-        let faucet_url = self.network.faucet_url()
-            .ok_or_else(|| IdentityError::FaucetError(
-                "No faucet available for this network".into()
-            ))?;
-
-        info!(
-            address = %address,
-            faucet = %faucet_url,
-            "Requesting funds from IOTA faucet"
-        );
-
-        let client = reqwest::Client::new();
-        let response = client
-            .post(faucet_url)
-            .json(&serde_json::json!({
-                "FixedAmountRequest": {
-                    "recipient": address
-                }
-            }))
-            .send()
-            .await
-            .map_err(|e| IdentityError::FaucetError(e.to_string()))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            warn!(
-                status = %status,
-                body = %body,
-                "Faucet request returned non-success status"
-            );
-        }
-
-        // Wait for transaction processing
-        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-
-        Ok(())
-    }
-
     /// Resolve a DID to retrieve its DID Document from the blockchain
-    ///
-    /// # Arguments
-    /// * `did` - DID string to resolve (e.g., "did:iota:0x...")
-    ///
-    /// # Returns
-    /// The IotaDocument from the blockchain
     pub async fn resolve_did(&self, did: &str) -> IdentityResult<IotaDocument> {
         debug!(did = %did, "Resolving DID from IOTA Rebased");
 
-        // Parse and validate DID
         let iota_did = IotaDID::parse(did)
             .map_err(|e| IdentityError::InvalidDID(e.to_string()))?;
 
-        // Use read-only client to resolve
         let document = self.read_only_client
             .resolve_did(&iota_did)
             .await
@@ -404,7 +329,6 @@ impl DIDManager {
 
     /// Get or initialize the issuer's DID
     pub async fn get_or_create_issuer_did(&self) -> IdentityResult<IotaDID> {
-        // Check if already initialized
         {
             let guard = self.issuer_did.read();
             if let Some(ref did) = *guard {
@@ -412,25 +336,20 @@ impl DIDManager {
             }
         }
 
-        // Need to create new issuer DID
         info!("Creating issuer DID for Identity Service");
         
-        // Generate a new keypair for the issuer
         let issuer_keypair = ed25519_dalek::SigningKey::generate(&mut rand::thread_rng());
         let public_key_hex = hex::encode(issuer_keypair.verifying_key().as_bytes());
 
-        // Create the issuer's DID
         let identity = self.create_did(
             &public_key_hex,
             shared::types::DeviceType::Generic,
             vec!["issuer".into()],
         ).await?;
 
-        // Parse the DID
         let issuer_did = IotaDID::parse(&identity.did)
             .map_err(|e| IdentityError::InvalidDID(e.to_string()))?;
 
-        // Store it
         {
             let mut guard = self.issuer_did.write();
             *guard = Some(issuer_did.clone());
@@ -457,24 +376,22 @@ impl DIDManager {
     }
 }
 
-// =============================================================================
-// HELPER FUNCTIONS
-// =============================================================================
-
 /// Create a read-only identity client for resolving DIDs
-pub async fn create_read_only_client(endpoint: &str) -> Result<IdentityClientReadOnly> {
+pub async fn create_read_only_client(endpoint: &str, package_id: &str) -> Result<IdentityClientReadOnly> {
     let iota_client = IotaClientBuilder::default()
         .build(endpoint)
         .await
         .context("Failed to build IOTA client")?;
 
-    IdentityClientReadOnly::new(iota_client)
+    let pkg_id = package_id.parse()
+        .context("Invalid package ID")?;
+
+    IdentityClientReadOnly::new_with_pkg_id(iota_client, pkg_id)
         .await
         .context("Failed to create read-only identity client")
 }
 
 /// Create in-memory storage for testing
-/// NOTE: Use Stronghold in production!
 pub fn create_mem_storage() -> Storage<JwkMemStore, KeyIdMemstore> {
     Storage::new(JwkMemStore::new(), KeyIdMemstore::new())
 }
@@ -485,18 +402,10 @@ mod tests {
 
     #[test]
     fn test_public_key_validation() {
-        // Valid 32-byte key (64 hex chars)
         let valid_key = "a".repeat(64);
         assert!(hex::decode(&valid_key).is_ok());
         
         let bytes = hex::decode(&valid_key).unwrap();
         assert_eq!(bytes.len(), 32);
-    }
-
-    #[test]
-    fn test_did_parsing() {
-        let valid_did = "did:iota:0x0000000000000000000000000000000000000000000000000000000000000000";
-        // This would work with actual IOTA DID parser
-        // let parsed = IotaDID::parse(valid_did);
     }
 }
