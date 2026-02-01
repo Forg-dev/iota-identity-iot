@@ -3,6 +3,8 @@
 //! This service provides:
 //! - DID creation and management on IOTA Rebased
 //! - Verifiable Credential issuance (W3C VC)
+//! - Credential revocation management
+//! - Key rotation support
 //! - REST API for device registration
 //! - Multi-level caching for performance
 //!
@@ -20,6 +22,7 @@ pub mod api;
 pub mod cache;
 pub mod credential;
 pub mod did;
+pub mod revocation;
 
 use shared::config::IdentityServiceConfig;
 
@@ -33,4 +36,6 @@ pub struct AppState {
     pub credential_issuer: credential::CredentialIssuer,
     /// Cache layer (wrapped in Arc - not Clone)
     pub cache: std::sync::Arc<cache::CacheManager>,
+    /// Revocation Manager for credential revocation
+    pub revocation_manager: std::sync::Arc<revocation::RevocationManager>,
 }

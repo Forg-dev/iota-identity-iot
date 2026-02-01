@@ -32,6 +32,18 @@ pub enum IdentityError {
     #[error("DID has been deactivated: {0}")]
     DIDDeactivated(String),
 
+    /// DID is already deactivated
+    #[error("DID is already deactivated: {0}")]
+    DIDAlreadyDeactivated(String),
+
+    /// Error updating a DID (key rotation or deactivation)
+    #[error("Failed to update DID: {0}")]
+    DIDUpdateError(String),
+    
+    /// Unauthorized operation (e.g., trying to update a DID not created by this service)
+    #[error("Unauthorized operation: {0}")]
+    UnauthorizedOperation(String),
+
     // =========================================================================
     // CREDENTIAL ERRORS
     // =========================================================================
@@ -246,7 +258,9 @@ impl IdentityError {
             | IdentityError::DIDResolutionError { .. }
             | IdentityError::InvalidDID(_)
             | IdentityError::DIDNotFound(_)
-            | IdentityError::DIDDeactivated(_) => "did",
+            | IdentityError::DIDDeactivated(_)
+            | IdentityError::DIDAlreadyDeactivated(_)
+            | IdentityError::DIDUpdateError(_) => "did",
 
             IdentityError::CredentialIssuanceError(_)
             | IdentityError::CredentialVerificationError(_)
@@ -280,7 +294,8 @@ impl IdentityError {
 
             IdentityError::InvalidRequest(_)
             | IdentityError::RegistrationError(_)
-            | IdentityError::Unauthorized(_) => "api",
+            | IdentityError::Unauthorized(_)
+            | IdentityError::UnauthorizedOperation(_) => "api",
 
             IdentityError::ConfigurationError(_)
             | IdentityError::MissingEnvVar(_) => "config",

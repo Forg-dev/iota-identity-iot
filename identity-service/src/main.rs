@@ -28,7 +28,8 @@ use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 
 use identity_service::{
-    api, cache::CacheManager, credential::CredentialIssuer, did::DIDManager, AppState,
+    api, cache::CacheManager, credential::CredentialIssuer, did::DIDManager, 
+    revocation::RevocationManager, AppState,
 };
 use shared::config::IdentityServiceConfig;
 
@@ -61,6 +62,9 @@ async fn main() -> Result<()> {
     info!("Initializing Cache Manager...");
     let cache = Arc::new(CacheManager::new(&config.cache));
 
+    info!("Initializing Revocation Manager...");
+    let revocation_manager = Arc::new(RevocationManager::new());
+
     info!("Initializing Credential Issuer...");
     let credential_issuer = CredentialIssuer::new(
         Arc::clone(&did_manager),
@@ -73,6 +77,7 @@ async fn main() -> Result<()> {
         did_manager: Arc::clone(&did_manager),
         credential_issuer,
         cache: Arc::clone(&cache),
+        revocation_manager: Arc::clone(&revocation_manager),
     });
 
     // Create router with shared state

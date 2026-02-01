@@ -329,6 +329,101 @@ pub struct CredentialVerificationResponse {
     pub expires_at: Option<DateTime<Utc>>,
 }
 
+/// Request to revoke a credential
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CredentialRevocationRequest {
+    /// Credential ID to revoke
+    pub credential_id: String,
+    
+    /// Reason for revocation
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Response from credential revocation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CredentialRevocationResponse {
+    /// Whether revocation succeeded
+    pub success: bool,
+    
+    /// Credential ID that was revoked
+    pub credential_id: String,
+    
+    /// Timestamp of revocation
+    pub revoked_at: DateTime<Utc>,
+    
+    /// Error message if failed
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Request to check credential status
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CredentialStatusResponse {
+    /// Credential ID
+    pub credential_id: String,
+    
+    /// Whether the credential is revoked
+    pub revoked: bool,
+    
+    /// When it was revoked (if applicable)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revoked_at: Option<DateTime<Utc>>,
+    
+    /// Revocation reason (if applicable)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Request to rotate a device's key
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeyRotationRequest {
+    /// New public key (Ed25519, hex encoded)
+    pub new_public_key: String,
+}
+
+/// Response from key rotation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeyRotationResponse {
+    /// Whether rotation succeeded
+    pub success: bool,
+    
+    /// The DID (unchanged)
+    pub did: String,
+    
+    /// New verification method ID
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_verification_method_id: Option<String>,
+    
+    /// Timestamp of rotation
+    pub rotated_at: DateTime<Utc>,
+    
+    /// Error message if failed
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Response from DID deactivation (on-chain revocation)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DIDDeactivationResponse {
+    /// Whether deactivation succeeded
+    pub success: bool,
+    
+    /// The DID that was deactivated
+    pub did: String,
+    
+    /// Timestamp of deactivation
+    pub deactivated_at: DateTime<Utc>,
+    
+    /// Transaction ID on blockchain (if available)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transaction_id: Option<String>,
+    
+    /// Error message if failed
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 /// Request to resolve a DID
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DIDResolutionRequest {
