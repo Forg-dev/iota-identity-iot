@@ -257,6 +257,9 @@ async fn connect_to_device(config: &DeviceClientConfig, addr: &str) -> Result<()
     
     let did = manager.did().unwrap().to_string();
     let credential_jwt = manager.credential_jwt().unwrap().to_string();
+    let signing_key = manager.signing_key().ok_or_else(|| {
+        anyhow::anyhow!("No signing key available")
+    })?.clone();
 
     let resolver = Arc::new(DIDResolver::new(config).await?);
     
@@ -264,6 +267,8 @@ async fn connect_to_device(config: &DeviceClientConfig, addr: &str) -> Result<()
         resolver,
         did,
         credential_jwt,
+        signing_key,
+        config.identity_service_url.clone(),
         config.tls.clone(),
     )?;
 
@@ -271,9 +276,17 @@ async fn connect_to_device(config: &DeviceClientConfig, addr: &str) -> Result<()
 
     println!("\n✓ Connected and authenticated!");
     println!("  Peer DID: {}", connection.peer_did);
+    println!("  Peer Public Key: {}...", &connection.peer_public_key[..16]);
+    println!("\n  Metrics:");
+    println!("    TLS Handshake: {}ms", connection.metrics.tls_handshake_ms);
+    println!("    DID Auth: {}ms", connection.metrics.did_auth_ms);
+    println!("    Credential Verify: {}ms", connection.metrics.credential_verify_ms);
+    println!("    Challenge-Response: {}ms", connection.metrics.challenge_response_ms);
+    println!("    Total: {}ms", connection.metrics.total_ms);
 
-    // Keep connection open briefly to demonstrate
-    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+    // Keep connection open briefly
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    println!("\nConnection closed.");
 
     Ok(())
 }
@@ -290,6 +303,9 @@ async fn start_server(config: &DeviceClientConfig, port: u16) -> Result<()> {
 
     let did = manager.did().unwrap().to_string();
     let credential_jwt = manager.credential_jwt().unwrap().to_string();
+    let signing_key = manager.signing_key().ok_or_else(|| {
+        anyhow::anyhow!("No signing key available")
+    })?.clone();
 
     let resolver = Arc::new(DIDResolver::new(config).await?);
     
@@ -297,6 +313,8 @@ async fn start_server(config: &DeviceClientConfig, port: u16) -> Result<()> {
         resolver,
         did.clone(),
         credential_jwt,
+        signing_key,
+        config.identity_service_url.clone(),
         config.tls.clone(),
     )?;
 

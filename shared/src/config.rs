@@ -409,6 +409,9 @@ pub struct TlsConfig {
 
     /// Path to store generated certificates
     pub cert_path: PathBuf,
+    
+    /// Whether to verify credential revocation status during TLS auth
+    pub verify_revocation: bool,
 }
 
 impl Default for TlsConfig {
@@ -418,6 +421,7 @@ impl Default for TlsConfig {
             handshake_timeout_secs: TLS_HANDSHAKE_TIMEOUT_SECS,
             did_auth_timeout_secs: DID_AUTH_TIMEOUT_SECS,
             cert_path: PathBuf::from("./certs"),
+            verify_revocation: true,
         }
     }
 }

@@ -192,6 +192,11 @@ impl IdentityManager {
         })
     }
     
+    /// Get a reference to the signing key (for TLS authentication)
+    pub fn signing_key(&self) -> Option<&SigningKey> {
+        self.signing_key.as_ref()
+    }
+    
     /// Verify a signature from another device
     pub fn verify_signature(
         public_key_hex: &str,

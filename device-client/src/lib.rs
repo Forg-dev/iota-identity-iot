@@ -25,5 +25,5 @@ pub mod registration;
 pub use identity::IdentityManager;
 pub use resolver::DIDResolver;
 pub use storage::SecureStorage;
-pub use tls::{TlsClient, TlsServer, DIDAuthenticator};
+pub use tls::{TlsClient, TlsServer, AuthenticatedConnection, AuthenticationMetrics, CredentialVerifier};
 pub use registration::DeviceRegistrar;

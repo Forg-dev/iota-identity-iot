@@ -584,6 +584,10 @@ pub struct DIDAuthMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub challenge: Option<String>,
     
+    /// Sender's public key (hex) for challenge-response verification
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<String>,
+    
     /// Timestamp
     pub timestamp: DateTime<Utc>,
 }

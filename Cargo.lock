@@ -1864,6 +1864,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "base64 0.22.1",
+ "bs58 0.5.1",
  "chrono",
  "clap",
  "ed25519-dalek",

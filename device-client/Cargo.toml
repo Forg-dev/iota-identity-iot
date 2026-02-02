@@ -16,7 +16,7 @@ shared = { path = "../shared" }
 
 # IOTA Rebased
 identity_iota.workspace = true
-# identity_stronghold.workspace = true  # Commented - conflicts with Rebased
+# NOTE: identity_stronghold not available yet for Rebased
 
 # Async runtime
 tokio.workspace = true
@@ -43,6 +43,7 @@ rand.workspace = true
 hex.workspace = true
 base64.workspace = true
 sha2.workspace = true
+bs58 = "0.5"
 
 # Error handling & logging
 anyhow.workspace = true

@@ -2,7 +2,7 @@
 //!
 //! Provides TLS communication with blockchain-based authentication:
 //! 1. Standard TLS handshake (with self-signed certificates)
-//! 2. Post-handshake DID authentication
+//! 2. Post-handshake DID authentication with challenge-response
 //! 3. Credential exchange and verification
 //!
 //! ## Protocol Flow
@@ -13,22 +13,39 @@
 //!   |-------- TLS Handshake ------------->|
 //!   |<------- TLS Established ------------|
 //!   |                                     |
-//!   |-------- DID Auth Hello ------------>|
-//!   |<------- DID Auth Hello -------------|
+//!   |-- Hello (DID, JWT, challenge) ----->|
+//!   |                                     | (verify JWT, check revocation)
+//!   |<-- Hello (DID, JWT, challenge, -----|
+//!   |         response to client challenge)|
 //!   |                                     |
-//!   |  (Both verify DIDs via blockchain)  |
+//!   | (verify JWT, check revocation,      |
+//!   |  verify challenge response)         |
 //!   |                                     |
-//!   |<------ Auth Success/Failure ------->|
+//!   |-- Response (to server challenge) -->|
+//!   |                                     | (verify challenge response)
+//!   |<------- Success / Failure ----------|
 //!   |                                     |
 //!   |====== Secure Communication =========|
 //! ```
+//!
+//! ## Security Properties
+//!
+//! - **Confidentiality**: TLS encryption (AES-256-GCM)
+//! - **Authentication**: DID-based with Verifiable Credentials
+//! - **Non-repudiation**: Challenge-response proves key possession
+//! - **Revocation**: On-chain RevocationBitmap2022 check
+
+mod verifier;
+
+pub use verifier::{CredentialVerifier, ParsedCredential, verify_challenge_response};
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tracing::{debug, info};
 
+use ed25519_dalek::{SigningKey, Signer};
 use rustls::{
     ClientConfig, ServerConfig,
     pki_types::{CertificateDer, PrivateKeyDer, ServerName},
@@ -44,6 +61,28 @@ use shared::{
 
 use crate::resolver::DIDResolver;
 
+/// Result of TLS + DID authentication with timing metrics
+#[derive(Debug, Clone)]
+pub struct AuthenticationMetrics {
+    /// TLS handshake duration
+    pub tls_handshake_ms: u64,
+    
+    /// DID authentication duration (credential exchange + verification)
+    pub did_auth_ms: u64,
+    
+    /// Credential verification duration
+    pub credential_verify_ms: u64,
+    
+    /// Challenge-response duration
+    pub challenge_response_ms: u64,
+    
+    /// Revocation check duration
+    pub revocation_check_ms: u64,
+    
+    /// Total authentication duration
+    pub total_ms: u64,
+}
+
 /// TLS Client with DID authentication
 pub struct TlsClient {
     /// TLS connector
@@ -52,11 +91,20 @@ pub struct TlsClient {
     /// DID Resolver for verifying server's DID
     resolver: Arc<DIDResolver>,
     
+    /// Credential verifier
+    verifier: Arc<CredentialVerifier>,
+    
     /// This device's DID
     device_did: String,
     
     /// This device's credential JWT
     credential_jwt: String,
+    
+    /// This device's public key (hex)
+    public_key_hex: String,
+    
+    /// This device's signing key for challenge-response
+    signing_key: SigningKey,
     
     /// Configuration
     config: TlsConfig,
@@ -68,8 +116,20 @@ impl TlsClient {
         resolver: Arc<DIDResolver>,
         device_did: String,
         credential_jwt: String,
+        signing_key: SigningKey,
+        identity_service_url: String,
         config: TlsConfig,
     ) -> IdentityResult<Self> {
+        // Create credential verifier
+        let verifier = Arc::new(CredentialVerifier::new(
+            resolver.clone(),
+            identity_service_url,
+            config.verify_revocation,
+        ));
+        
+        // Get public key hex for challenge-response verification
+        let public_key_hex = hex::encode(signing_key.verifying_key().as_bytes());
+        
         // Create TLS config that accepts any certificate
         // (we verify identity via DID, not certificate)
         let tls_config = ClientConfig::builder()
@@ -82,14 +142,18 @@ impl TlsClient {
         Ok(Self {
             connector,
             resolver,
+            verifier,
             device_did,
             credential_jwt,
+            public_key_hex,
+            signing_key,
             config,
         })
     }
 
     /// Connect to a server and perform DID authentication
     pub async fn connect(&self, addr: &str) -> IdentityResult<AuthenticatedConnection<ClientTlsStream<TcpStream>>> {
+        let total_start = Instant::now();
         info!(addr = %addr, "Connecting to server");
 
         // TCP connection
@@ -101,6 +165,7 @@ impl TlsClient {
             })?;
 
         // TLS handshake
+        let tls_start = Instant::now();
         let server_name = ServerName::try_from("localhost".to_string())
             .map_err(|_| IdentityError::TLSHandshakeError("Invalid server name".into()))?;
 
@@ -113,67 +178,135 @@ impl TlsClient {
             timeout_secs: self.config.handshake_timeout_secs,
         })?
         .map_err(|e| IdentityError::TLSHandshakeError(e.to_string()))?;
-
-        debug!("TLS handshake completed");
+        
+        let tls_handshake_ms = tls_start.elapsed().as_millis() as u64;
+        debug!(duration_ms = tls_handshake_ms, "TLS handshake completed");
 
         // DID Authentication
-        let server_did = self.perform_did_auth(&mut tls_stream).await?;
+        let did_auth_start = Instant::now();
+        let (server_did, peer_public_key, credential_verify_ms, challenge_response_ms, revocation_check_ms) = 
+            self.perform_did_auth(&mut tls_stream).await?;
+        let did_auth_ms = did_auth_start.elapsed().as_millis() as u64;
 
-        info!(server_did = %server_did, "DID authentication successful");
+        let total_ms = total_start.elapsed().as_millis() as u64;
+        
+        let metrics = AuthenticationMetrics {
+            tls_handshake_ms,
+            did_auth_ms,
+            credential_verify_ms,
+            challenge_response_ms,
+            revocation_check_ms,
+            total_ms,
+        };
+
+        info!(
+            server_did = %server_did,
+            total_ms = total_ms,
+            "DID authentication successful"
+        );
 
         Ok(AuthenticatedConnection {
             stream: tls_stream,
             peer_did: server_did,
+            peer_public_key,
+            metrics,
         })
     }
 
     /// Perform DID authentication after TLS handshake
-    async fn perform_did_auth(&self, stream: &mut ClientTlsStream<TcpStream>) -> IdentityResult<String> {
-        // Send our DID and credential
+    async fn perform_did_auth(
+        &self, 
+        stream: &mut ClientTlsStream<TcpStream>
+    ) -> IdentityResult<(String, String, u64, u64, u64)> {
+        // Generate challenge for server
+        let our_challenge = generate_challenge();
+        
+        // Send our hello with DID, credential, and challenge
         let hello = DIDAuthMessage {
             message_type: DIDAuthMessageType::Hello,
             did: self.device_did.clone(),
             credential_jwt: self.credential_jwt.clone(),
+            challenge: Some(our_challenge.clone()),
             challenge_response: None,
-            challenge: Some(generate_challenge()),
+            public_key: Some(self.public_key_hex.clone()),
             timestamp: chrono::Utc::now(),
         };
 
         send_message(stream, &hello).await?;
-        debug!("Sent DID auth hello");
+        debug!("Sent DID auth hello with challenge");
 
-        // Receive server's hello
+        // Receive server's hello (with their credential and response to our challenge)
         let server_hello: DIDAuthMessage = receive_message(stream).await?;
         debug!(server_did = %server_hello.did, "Received server DID auth hello");
 
-        // Verify server's DID and credential
-        self.verify_peer(&server_hello).await?;
-
-        // Wait for success confirmation
-        let response: DIDAuthMessage = receive_message(stream).await?;
+        // Verify server's credential
+        let verify_start = Instant::now();
+        let _credential = self.verifier
+            .verify_credential(&server_hello.credential_jwt, &server_hello.did)
+            .await?;
+        let credential_verify_ms = verify_start.elapsed().as_millis() as u64;
         
-        if response.message_type != DIDAuthMessageType::Success {
+        // Get server's public key
+        let server_public_key = server_hello.public_key.ok_or_else(|| {
+            IdentityError::DIDAuthenticationError("Server did not provide public key".into())
+        })?;
+        
+        // Verify server's response to our challenge
+        let challenge_start = Instant::now();
+        let server_response = server_hello.challenge_response.ok_or_else(|| {
+            IdentityError::DIDAuthenticationError("Server did not respond to challenge".into())
+        })?;
+        
+        let valid = verify_challenge_response(&our_challenge, &server_response, &server_public_key)?;
+        if !valid {
+            return Err(IdentityError::DIDAuthenticationError(
+                "Server challenge response invalid".into()
+            ));
+        }
+        let challenge_response_ms = challenge_start.elapsed().as_millis() as u64;
+        debug!("Server challenge-response verified");
+        
+        // Sign server's challenge
+        let server_challenge = server_hello.challenge.ok_or_else(|| {
+            IdentityError::DIDAuthenticationError("Server did not send challenge".into())
+        })?;
+        
+        let our_response = self.signing_key.sign(server_challenge.as_bytes());
+        let our_response_hex = hex::encode(our_response.to_bytes());
+        
+        // Send our response
+        let response_msg = DIDAuthMessage {
+            message_type: DIDAuthMessageType::Response,
+            did: self.device_did.clone(),
+            credential_jwt: String::new(),
+            challenge: None,
+            challenge_response: Some(our_response_hex),
+            public_key: None,
+            timestamp: chrono::Utc::now(),
+        };
+        
+        send_message(stream, &response_msg).await?;
+        debug!("Sent challenge response");
+
+        // Wait for success/failure
+        let result: DIDAuthMessage = receive_message(stream).await?;
+        
+        if result.message_type != DIDAuthMessageType::Success {
             return Err(IdentityError::DIDAuthenticationError(
                 "Server rejected authentication".into()
             ));
         }
 
-        Ok(server_hello.did)
-    }
+        // Revocation check time is included in credential verification for now
+        let revocation_check_ms = 0;
 
-    /// Verify peer's DID and credential
-    async fn verify_peer(&self, message: &DIDAuthMessage) -> IdentityResult<()> {
-        // Resolve peer's DID from blockchain
-        let _did_document = self.resolver.resolve(&message.did).await?;
-
-        // In a full implementation, we would:
-        // 1. Verify the credential JWT signature
-        // 2. Check that the credential subject matches the DID
-        // 3. Check credential expiration
-        // 4. Check revocation status on-chain
-
-        debug!(peer_did = %message.did, "Peer verification successful");
-        Ok(())
+        Ok((
+            server_hello.did,
+            server_public_key,
+            credential_verify_ms,
+            challenge_response_ms,
+            revocation_check_ms,
+        ))
     }
 }
 
@@ -183,7 +316,11 @@ pub struct TlsServer {
     acceptor: TlsAcceptor,
     
     /// DID Resolver
+    #[allow(dead_code)]
     resolver: Arc<DIDResolver>,
+    
+    /// Credential verifier
+    verifier: Arc<CredentialVerifier>,
     
     /// This server's DID
     server_did: String,
@@ -191,7 +328,14 @@ pub struct TlsServer {
     /// This server's credential JWT
     credential_jwt: String,
     
+    /// This server's public key (hex)
+    public_key_hex: String,
+    
+    /// This server's signing key for challenge-response
+    signing_key: SigningKey,
+    
     /// Configuration
+    #[allow(dead_code)]
     config: TlsConfig,
 }
 
@@ -201,9 +345,21 @@ impl TlsServer {
         resolver: Arc<DIDResolver>,
         server_did: String,
         credential_jwt: String,
+        signing_key: SigningKey,
+        identity_service_url: String,
         config: TlsConfig,
     ) -> IdentityResult<Self> {
-        // Generate self-signed certificate
+        // Create credential verifier
+        let verifier = Arc::new(CredentialVerifier::new(
+            resolver.clone(),
+            identity_service_url,
+            config.verify_revocation,
+        ));
+        
+        // Get public key hex
+        let public_key_hex = hex::encode(signing_key.verifying_key().as_bytes());
+        
+        // Generate self-signed certificate for TLS
         let CertifiedKey { cert, key_pair } = generate_simple_self_signed(vec!["localhost".into()])
             .map_err(|e| IdentityError::TLSCertificateError(e.to_string()))?;
 
@@ -221,14 +377,23 @@ impl TlsServer {
         Ok(Self {
             acceptor,
             resolver,
+            verifier,
             server_did,
             credential_jwt,
+            public_key_hex,
+            signing_key,
             config,
         })
+    }
+    
+    /// Get the TLS acceptor for accepting raw connections
+    pub fn acceptor(&self) -> &TlsAcceptor {
+        &self.acceptor
     }
 
     /// Accept a connection and perform DID authentication
     pub async fn accept(&self, stream: TcpStream) -> IdentityResult<AuthenticatedConnection<ServerTlsStream<TcpStream>>> {
+        let total_start = Instant::now();
         let peer_addr = stream.peer_addr()
             .map(|a| a.to_string())
             .unwrap_or_else(|_| "unknown".into());
@@ -236,88 +401,178 @@ impl TlsServer {
         info!(peer = %peer_addr, "Accepting connection");
 
         // TLS handshake
-        let mut tls_stream = tokio::time::timeout(
-            Duration::from_secs(self.config.handshake_timeout_secs),
-            self.acceptor.accept(stream),
-        )
-        .await
-        .map_err(|_| IdentityError::ConnectionTimeout {
-            timeout_secs: self.config.handshake_timeout_secs,
-        })?
-        .map_err(|e| IdentityError::TLSHandshakeError(e.to_string()))?;
-
-        debug!("TLS handshake completed");
+        let tls_start = Instant::now();
+        let mut tls_stream = self.acceptor.accept(stream)
+            .await
+            .map_err(|e| IdentityError::TLSHandshakeError(e.to_string()))?;
+        
+        let tls_handshake_ms = tls_start.elapsed().as_millis() as u64;
+        debug!(duration_ms = tls_handshake_ms, "TLS handshake completed");
 
         // DID Authentication
-        let client_did = self.perform_did_auth(&mut tls_stream).await?;
+        let did_auth_start = Instant::now();
+        let (client_did, peer_public_key, credential_verify_ms, challenge_response_ms, revocation_check_ms) = 
+            self.perform_did_auth(&mut tls_stream).await?;
+        let did_auth_ms = did_auth_start.elapsed().as_millis() as u64;
+        
+        let total_ms = total_start.elapsed().as_millis() as u64;
+        
+        let metrics = AuthenticationMetrics {
+            tls_handshake_ms,
+            did_auth_ms,
+            credential_verify_ms,
+            challenge_response_ms,
+            revocation_check_ms,
+            total_ms,
+        };
 
-        info!(client_did = %client_did, "Client authenticated");
+        info!(
+            client_did = %client_did,
+            total_ms = total_ms,
+            "Client authenticated"
+        );
 
         Ok(AuthenticatedConnection {
             stream: tls_stream,
             peer_did: client_did,
+            peer_public_key,
+            metrics,
         })
     }
 
     /// Perform DID authentication with client
-    async fn perform_did_auth(&self, stream: &mut ServerTlsStream<TcpStream>) -> IdentityResult<String> {
+    async fn perform_did_auth(
+        &self, 
+        stream: &mut ServerTlsStream<TcpStream>
+    ) -> IdentityResult<(String, String, u64, u64, u64)> {
         // Receive client's hello
         let client_hello: DIDAuthMessage = receive_message(stream).await?;
         debug!(client_did = %client_hello.did, "Received client DID auth hello");
 
-        // Verify client's DID and credential
-        self.verify_peer(&client_hello).await?;
+        // Verify client's credential
+        let verify_start = Instant::now();
+        let _credential = self.verifier
+            .verify_credential(&client_hello.credential_jwt, &client_hello.did)
+            .await?;
+        let credential_verify_ms = verify_start.elapsed().as_millis() as u64;
+        
+        // Get client's public key
+        let client_public_key = client_hello.public_key.ok_or_else(|| {
+            IdentityError::DIDAuthenticationError("Client did not provide public key".into())
+        })?;
+        
+        // Get client's challenge
+        let client_challenge = client_hello.challenge.ok_or_else(|| {
+            IdentityError::DIDAuthenticationError("Client did not send challenge".into())
+        })?;
+        
+        // Sign client's challenge
+        let our_response = self.signing_key.sign(client_challenge.as_bytes());
+        let our_response_hex = hex::encode(our_response.to_bytes());
+        
+        // Generate our challenge for client
+        let our_challenge = generate_challenge();
 
-        // Send our hello
+        // Send our hello with response to client's challenge and our challenge
         let hello = DIDAuthMessage {
             message_type: DIDAuthMessageType::Hello,
             did: self.server_did.clone(),
             credential_jwt: self.credential_jwt.clone(),
-            challenge_response: client_hello.challenge.clone(),
-            challenge: Some(generate_challenge()),
+            challenge: Some(our_challenge.clone()),
+            challenge_response: Some(our_response_hex),
+            public_key: Some(self.public_key_hex.clone()),
             timestamp: chrono::Utc::now(),
         };
 
         send_message(stream, &hello).await?;
+        debug!("Sent DID auth hello with challenge response");
+        
+        // Receive client's response to our challenge
+        let client_response: DIDAuthMessage = receive_message(stream).await?;
+        
+        if client_response.message_type != DIDAuthMessageType::Response {
+            return Err(IdentityError::DIDAuthenticationError(
+                "Expected challenge response from client".into()
+            ));
+        }
+        
+        // Verify client's response
+        let challenge_start = Instant::now();
+        let response = client_response.challenge_response.ok_or_else(|| {
+            IdentityError::DIDAuthenticationError("Client did not provide challenge response".into())
+        })?;
+        
+        let valid = verify_challenge_response(&our_challenge, &response, &client_public_key)?;
+        if !valid {
+            // Send failure
+            let failure = DIDAuthMessage {
+                message_type: DIDAuthMessageType::Failure,
+                did: self.server_did.clone(),
+                credential_jwt: String::new(),
+                challenge: None,
+                challenge_response: None,
+                public_key: None,
+                timestamp: chrono::Utc::now(),
+            };
+            send_message(stream, &failure).await?;
+            
+            return Err(IdentityError::DIDAuthenticationError(
+                "Client challenge response invalid".into()
+            ));
+        }
+        let challenge_response_ms = challenge_start.elapsed().as_millis() as u64;
+        debug!("Client challenge-response verified");
 
         // Send success
         let success = DIDAuthMessage {
             message_type: DIDAuthMessageType::Success,
             did: self.server_did.clone(),
             credential_jwt: String::new(),
-            challenge_response: None,
             challenge: None,
+            challenge_response: None,
+            public_key: None,
             timestamp: chrono::Utc::now(),
         };
 
         send_message(stream, &success).await?;
 
-        Ok(client_hello.did)
-    }
+        let revocation_check_ms = 0;
 
-    /// Verify peer's DID and credential
-    async fn verify_peer(&self, message: &DIDAuthMessage) -> IdentityResult<()> {
-        // Resolve peer's DID from blockchain
-        let _did_document = self.resolver.resolve(&message.did).await?;
-
-        // Full verification would include credential checks
-        debug!(peer_did = %message.did, "Peer verification successful");
-        Ok(())
+        Ok((
+            client_hello.did,
+            client_public_key,
+            credential_verify_ms,
+            challenge_response_ms,
+            revocation_check_ms,
+        ))
     }
 }
 
-/// An authenticated TLS connection
+/// An authenticated TLS connection with metrics
 pub struct AuthenticatedConnection<S> {
     /// The TLS stream
     pub stream: S,
+    
     /// The authenticated peer's DID
     pub peer_did: String,
+    
+    /// The peer's public key (hex)
+    pub peer_public_key: String,
+    
+    /// Authentication metrics
+    pub metrics: AuthenticationMetrics,
 }
 
-/// DID Authenticator trait for custom implementations
-pub trait DIDAuthenticator {
-    /// Verify a peer's DID and credential
-    fn verify(&self, did: &str, credential_jwt: &str) -> impl std::future::Future<Output = IdentityResult<()>> + Send;
+impl<S> AuthenticatedConnection<S> {
+    /// Get the peer's DID
+    pub fn peer_did(&self) -> &str {
+        &self.peer_did
+    }
+    
+    /// Get authentication metrics
+    pub fn metrics(&self) -> &AuthenticationMetrics {
+        &self.metrics
+    }
 }
 
 // =============================================================================
@@ -456,5 +711,19 @@ mod tests {
         
         assert_eq!(challenge1.len(), 64); // 32 bytes = 64 hex chars
         assert_ne!(challenge1, challenge2);
+    }
+    
+    #[test]
+    fn test_authentication_metrics_default() {
+        let metrics = AuthenticationMetrics {
+            tls_handshake_ms: 50,
+            did_auth_ms: 100,
+            credential_verify_ms: 30,
+            challenge_response_ms: 5,
+            revocation_check_ms: 10,
+            total_ms: 165,
+        };
+        
+        assert_eq!(metrics.total_ms, 165);
     }
 }
