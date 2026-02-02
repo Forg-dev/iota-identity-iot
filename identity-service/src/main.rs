@@ -20,6 +20,7 @@
 //! - `POST /api/v1/device/register` - Register a new device
 //! - `GET /api/v1/did/resolve/:did` - Resolve a DID
 //! - `POST /api/v1/credential/verify` - Verify a credential
+//! - `POST /api/v1/credential/revoke` - Revoke a credential (on-chain)
 //! - `GET /metrics` - Get service metrics
 
 use anyhow::Result;
@@ -29,7 +30,7 @@ use tracing_subscriber::FmtSubscriber;
 
 use identity_service::{
     api, cache::CacheManager, credential::CredentialIssuer, did::DIDManager, 
-    revocation::RevocationManager, AppState,
+    revocation::{RevocationManager, OnChainRevocationManager}, AppState,
 };
 use shared::config::IdentityServiceConfig;
 
@@ -62,12 +63,19 @@ async fn main() -> Result<()> {
     info!("Initializing Cache Manager...");
     let cache = Arc::new(CacheManager::new(&config.cache));
 
-    info!("Initializing Revocation Manager...");
+    info!("Initializing In-Memory Revocation Manager...");
     let revocation_manager = Arc::new(RevocationManager::new());
 
-    info!("Initializing Credential Issuer...");
+    // Initialize On-Chain Revocation Manager (RevocationBitmap2022)
+    // Using placeholder issuer DID - in production this should be a real on-chain DID
+    let issuer_did = format!("did:iota:{}:issuer", config.network.to_string().to_lowercase());
+    info!(issuer_did = %issuer_did, "Initializing On-Chain Revocation Manager (RevocationBitmap2022)...");
+    let onchain_revocation_manager = Arc::new(OnChainRevocationManager::new(issuer_did));
+
+    info!("Initializing Credential Issuer with RevocationBitmap2022...");
     let credential_issuer = CredentialIssuer::new(
         Arc::clone(&did_manager),
+        Arc::clone(&onchain_revocation_manager),
         config.credential.clone(),
     ).await?;
 
@@ -78,6 +86,7 @@ async fn main() -> Result<()> {
         credential_issuer,
         cache: Arc::clone(&cache),
         revocation_manager: Arc::clone(&revocation_manager),
+        onchain_revocation_manager: Arc::clone(&onchain_revocation_manager),
     });
 
     // Create router with shared state
@@ -94,6 +103,7 @@ async fn main() -> Result<()> {
     info!("  POST /api/v1/device/register - Register a new device");
     info!("  GET  /api/v1/did/resolve/:did - Resolve a DID");
     info!("  POST /api/v1/credential/verify - Verify a credential");
+    info!("  POST /api/v1/credential/revoke-onchain - Revoke a credential (RevocationBitmap2022)");
 
     axum::serve(listener, app).await?;
 

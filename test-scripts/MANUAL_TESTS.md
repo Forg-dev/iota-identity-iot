@@ -403,7 +403,226 @@ curl -s -X POST "http://localhost:8080/api/v1/admin/cache/clear" | jq .
 # ✅ Input Validation
 # ✅ Metrics
 # ✅ Cache Management
+# ✅ RevocationBitmap2022 (on-chain revocation)
 #
+# =============================================================================
+
+
+# =============================================================================
+# =============================================================================
+#                    REVOCATIONBITMAP2022 - TEST ON-CHAIN
+# =============================================================================
+# =============================================================================
+# Questi test verificano l'implementazione W3C RevocationBitmap2022 per la
+# revoca on-chain delle credenziali. A differenza della revoca in-memory,
+# questa è persistente e verificabile da qualsiasi parte terza.
+# =============================================================================
+
+
+# =============================================================================
+# TEST 19: Statistiche Bitmap (stato iniziale)
+# =============================================================================
+# Verifica lo stato iniziale del bitmap di revoca.
+# NOTA: I numeri dipendono da quanti test hai già eseguito.
+
+curl -s "http://localhost:8080/api/v1/revocation/bitmap-stats" | jq .
+
+# OUTPUT ATTESO:
+# {
+#   "issuer_did": "did:iota:testnet:issuer",
+#   "total_credentials_issued": <numero>,
+#   "revoked_count": <numero>,
+#   "is_dirty": <true/false>,
+#   "serialized_size_bytes": <numero>,
+#   "revocation_type": "RevocationBitmap2022"
+# }
+
+
+# =============================================================================
+# TEST 20: Registra Device e Verifica credentialStatus
+# =============================================================================
+# Le nuove credenziali includono credentialStatus con RevocationBitmap2022.
+
+RESPONSE=$(curl -s -X POST "http://localhost:8080/api/v1/device/register" \
+    -H "Content-Type: application/json" \
+    -d '{
+        "public_key": "'$(openssl rand -hex 32)'",
+        "device_type": "sensor",
+        "capabilities": ["temperature"]
+    }')
+
+echo "$RESPONSE" | jq .
+
+# Salva i valori per i test successivi:
+export BITMAP_DID=$(echo "$RESPONSE" | jq -r '.did')
+export BITMAP_JWT=$(echo "$RESPONSE" | jq -r '.credential_jwt')
+
+# Decodifica il JWT per vedere credentialStatus:
+# (Nota: il credentialStatus è dentro .vc nel payload JWT)
+echo "$BITMAP_JWT" | cut -d'.' -f2 | tr '_-' '/+' | awk '{while(length($0)%4)$0=$0"=";print}' | base64 -d | jq '.vc.credentialStatus'
+
+# OUTPUT ATTESO:
+# {
+#   "id": "did:iota:testnet:issuer#revocation",
+#   "type": "RevocationBitmap2022",
+#   "revocationBitmapIndex": "<numero>"
+# }
+
+# Salva l'indice per i test successivi:
+export REVOCATION_INDEX=$(echo "$BITMAP_JWT" | cut -d'.' -f2 | tr '_-' '/+' | awk '{while(length($0)%4)$0=$0"=";print}' | base64 -d | jq -r '.vc.credentialStatus.revocationBitmapIndex')
+echo "Revocation Index: $REVOCATION_INDEX"
+
+
+# =============================================================================
+# TEST 21: Verifica Status On-Chain (NON revocato)
+# =============================================================================
+# Controlla che la credenziale appena creata NON sia revocata.
+
+curl -s "http://localhost:8080/api/v1/credential/status-onchain/$REVOCATION_INDEX" | jq .
+
+# OUTPUT ATTESO:
+# {
+#   "issuer_did": "did:iota:testnet:issuer",
+#   "revocation_index": <numero>,
+#   "revoked": false,
+#   "checked_at": "2026-...",
+#   "from_chain": false
+# }
+
+
+# =============================================================================
+# TEST 22: Revoca On-Chain (RevocationBitmap2022)
+# =============================================================================
+# Revoca la credenziale usando RevocationBitmap2022.
+# Questa revoca è persistente e verificabile da chiunque.
+
+# Prima estrai l'ID della credenziale:
+export BITMAP_CRED_ID=$(echo "$BITMAP_JWT" | cut -d'.' -f2 | tr '_-' '/+' | awk '{while(length($0)%4)$0=$0"=";print}' | base64 -d | jq -r '.vc.id')
+echo "Credential ID: $BITMAP_CRED_ID"
+
+# Esegui la revoca:
+curl -s -X POST "http://localhost:8080/api/v1/credential/revoke-onchain" \
+    -H "Content-Type: application/json" \
+    -d "{
+        \"credential_id\": \"$BITMAP_CRED_ID\",
+        \"revocation_index\": $REVOCATION_INDEX,
+        \"reason\": \"Device compromised - security breach\"
+    }" | jq .
+
+# OUTPUT ATTESO:
+# {
+#   "success": true,
+#   "credential_id": "urn:uuid:...",
+#   "revocation_index": <numero>,
+#   "revoked_at": "2026-...",
+#   "on_chain": true,
+#   "transaction_id": null,
+#   "error": null
+# }
+
+
+# =============================================================================
+# TEST 23: Verifica Status On-Chain (ORA REVOCATO)
+# =============================================================================
+# La credenziale deve ora risultare revocata.
+
+curl -s "http://localhost:8080/api/v1/credential/status-onchain/$REVOCATION_INDEX" | jq .
+
+# OUTPUT ATTESO:
+# {
+#   "issuer_did": "did:iota:testnet:issuer",
+#   "revocation_index": <numero>,
+#   "revoked": true,    <-- CAMBIATO DA false A true!
+#   "checked_at": "2026-...",
+#   "from_chain": false
+# }
+
+
+# =============================================================================
+# TEST 24: Tentativo Doppia Revoca (deve fallire)
+# =============================================================================
+# Non è possibile revocare due volte la stessa credenziale.
+
+curl -s -X POST "http://localhost:8080/api/v1/credential/revoke-onchain" \
+    -H "Content-Type: application/json" \
+    -d "{
+        \"credential_id\": \"$BITMAP_CRED_ID\",
+        \"revocation_index\": $REVOCATION_INDEX,
+        \"reason\": \"Second attempt\"
+    }" | jq .
+
+# OUTPUT ATTESO:
+# {
+#   "success": false,
+#   "credential_id": "urn:uuid:...",
+#   "revocation_index": <numero>,
+#   "revoked_at": "2026-...",
+#   "on_chain": false,
+#   "error": "Credential at index <numero> (ID: urn:uuid:...) is already revoked"
+# }
+
+
+# =============================================================================
+# TEST 25: Statistiche Bitmap (dopo revoca)
+# =============================================================================
+# Verifica che le statistiche riflettano la revoca.
+
+curl -s "http://localhost:8080/api/v1/revocation/bitmap-stats" | jq .
+
+# OUTPUT ATTESO:
+# {
+#   "issuer_did": "did:iota:testnet:issuer",
+#   "total_credentials_issued": <precedente + 1>,
+#   "revoked_count": <precedente + 1>,
+#   "is_dirty": true,    <-- Il bitmap è stato modificato
+#   "serialized_size_bytes": <numero>,
+#   "revocation_type": "RevocationBitmap2022"
+# }
+
+
+# =============================================================================
+# TEST 26: Registra Secondo Device (indice diverso)
+# =============================================================================
+# Verifica che il prossimo device ottenga un indice di revoca diverso.
+
+RESPONSE2=$(curl -s -X POST "http://localhost:8080/api/v1/device/register" \
+    -H "Content-Type: application/json" \
+    -d '{
+        "public_key": "'$(openssl rand -hex 32)'",
+        "device_type": "gateway",
+        "capabilities": ["routing"]
+    }')
+
+echo "$RESPONSE2" | jq .
+
+# Verifica che l'indice sia incrementato:
+echo "$RESPONSE2" | jq -r '.credential_jwt' | cut -d'.' -f2 | tr '_-' '/+' | awk '{while(length($0)%4)$0=$0"=";print}' | base64 -d | jq '.vc.credentialStatus'
+
+# OUTPUT ATTESO:
+# {
+#   "id": "did:iota:testnet:issuer#revocation",
+#   "type": "RevocationBitmap2022",
+#   "revocationBitmapIndex": "<numero precedente + 1>"
+# }
+
+
+# =============================================================================
+# TEST 27: Verifica Indice Non Revocato
+# =============================================================================
+# Il nuovo device non deve essere revocato.
+
+NEW_INDEX=$(echo "$RESPONSE2" | jq -r '.credential_jwt' | cut -d'.' -f2 | tr '_-' '/+' | awk '{while(length($0)%4)$0=$0"=";print}' | base64 -d | jq -r '.vc.credentialStatus.revocationBitmapIndex')
+echo "New Index: $NEW_INDEX"
+
+curl -s "http://localhost:8080/api/v1/credential/status-onchain/$NEW_INDEX" | jq .
+
+# OUTPUT ATTESO:
+# {
+#   "revocation_index": <nuovo indice>,
+#   "revoked": false
+# }
+
+
 # =============================================================================
 # VERIFICA SU IOTA EXPLORER
 # =============================================================================
@@ -412,4 +631,37 @@ curl -s -X POST "http://localhost:8080/api/v1/admin/cache/clear" | jq .
 #
 # L'object_id è la parte dopo "did:iota:testnet:" nel DID.
 # Esempio: did:iota:testnet:0xabc123... -> object_id = 0xabc123...
+# =============================================================================
+
+
+# =============================================================================
+# RIEPILOGO REVOCATIONBITMAP2022
+# =============================================================================
+#
+# Il sistema implementa la specifica W3C RevocationBitmap2022:
+#
+# 1. STRUTTURA CREDENTIAL:
+#    Ogni credenziale include un campo credentialStatus:
+#    {
+#      "id": "did:iota:testnet:issuer#revocation",
+#      "type": "RevocationBitmap2022",
+#      "revocationBitmapIndex": "N"
+#    }
+#
+# 2. REVOCA:
+#    - Ogni credenziale ha un indice univoco nel bitmap
+#    - Revocare = impostare il bit a 1 all'indice specificato
+#    - La revoca è irreversibile (nel nostro caso)
+#
+# 3. VERIFICA:
+#    - Qualsiasi verifier può controllare lo stato
+#    - Basta risolvere il DID dell'issuer e decodificare il bitmap
+#    - Se il bit all'indice è 1, la credenziale è revocata
+#
+# 4. VANTAGGI vs REVOCA IN-MEMORY:
+#    - Persistente (sopravvive ai restart)
+#    - Verificabile pubblicamente
+#    - Standard W3C
+#    - Privacy-preserving (nessun tracking delle verifiche)
+#
 # =============================================================================

@@ -61,8 +61,12 @@ pub enum IdentityError {
     CredentialExpired { expiration: String },
 
     /// Credential has been revoked
-    #[error("Credential has been revoked: {0}")]
-    CredentialRevoked(String),
+    #[error("Credential '{credential_id}' has been revoked: {reason}")]
+    CredentialRevoked { credential_id: String, reason: String },
+
+    /// Revocation error
+    #[error("Revocation error: {0}")]
+    RevocationError(String),
 
     /// Invalid credential format
     #[error("Invalid credential format: {0}")]
@@ -265,7 +269,8 @@ impl IdentityError {
             IdentityError::CredentialIssuanceError(_)
             | IdentityError::CredentialVerificationError(_)
             | IdentityError::CredentialExpired { .. }
-            | IdentityError::CredentialRevoked(_)
+            | IdentityError::CredentialRevoked { .. }
+            | IdentityError::RevocationError(_)
             | IdentityError::InvalidCredential(_)
             | IdentityError::InvalidSignature => "credential",
 

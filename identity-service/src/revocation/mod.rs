@@ -1,20 +1,37 @@
 //! # Revocation Manager
 //!
-//! Manages credential revocation status.
+//! Manages credential revocation status with two strategies:
 //! 
-//! ## Architecture
+//! ## 1. In-Memory Revocation (RevocationManager)
 //!
-//! For simplicity, this implementation uses an in-memory revocation list.
-//! In production, this should be:
-//! - Stored on-chain using IOTA Rebased (RevocationBitmap2022)
-//! - Or in a persistent database with blockchain anchoring
+//! Simple in-memory revocation list for development and testing.
+//! - Fast but not persistent
+//! - Lost on server restart
+//!
+//! ## 2. On-Chain Revocation (OnChainRevocationManager)
+//!
+//! Uses RevocationBitmap2022 standard for on-chain revocation.
+//! - Persistent on IOTA Rebased blockchain
+//! - W3C compliant
+//! - Any verifier can check revocation status
 //!
 //! ## W3C Revocation Standards
 //!
 //! This follows the W3C Verifiable Credentials Status List approach:
-//! - Each credential has a unique ID
-//! - Revocation status is tracked separately from the credential
+//! - Each credential has a unique ID and revocationBitmapIndex
+//! - Revocation status is stored in issuer's DID Document
 //! - Revocation can include timestamp and reason
+
+pub mod bitmap;
+
+pub use bitmap::{
+    OnChainRevocationManager,
+    OnChainRevocationError,
+    RevocationBitmapStats,
+    RevocationInfo,
+    REVOCATION_SERVICE_TYPE,
+    REVOCATION_SERVICE_FRAGMENT,
+};
 
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;

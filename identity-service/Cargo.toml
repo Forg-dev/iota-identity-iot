@@ -17,7 +17,6 @@ shared = { path = "../shared" }
 # IOTA Rebased (from GitHub, NOT crates.io!)
 identity_iota.workspace = true
 identity_storage.workspace = true
-
 # identity_stronghold commented out - using JwkMemStore/KeyIdMemstore instead
 # identity_stronghold.workspace = true
 
@@ -39,12 +38,14 @@ serde_json.workspace = true
 # Caching
 moka.workspace = true
 
+# RevocationBitmap2022 support
+roaring = "0.10"
+flate2 = "1.0"
+
 # Cryptography
 ed25519-dalek.workspace = true
 rand.workspace = true
 hex.workspace = true
-sha2.workspace = true
-fastcrypto = "*"
 base64.workspace = true
 
 # Error handling & logging

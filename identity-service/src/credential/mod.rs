@@ -3,7 +3,7 @@
 //! This module handles:
 //! - Issuing Verifiable Credentials for IoT devices
 //! - Verifying credential signatures
-//! - Credential revocation
+//! - Credential revocation using RevocationBitmap2022
 //!
 //! ## W3C VC Data Model
 //!
@@ -11,6 +11,7 @@
 //! - Context: https://www.w3.org/2018/credentials/v1
 //! - Types: VerifiableCredential, IoTDeviceCredential
 //! - Proof: Ed25519Signature2020
+//! - Status: RevocationBitmap2022
 
 use chrono::{Duration, Utc};
 use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
@@ -25,11 +26,15 @@ use shared::{
 };
 
 use crate::did::DIDManager;
+use crate::revocation::{OnChainRevocationManager, REVOCATION_SERVICE_TYPE};
 
 /// Credential Issuer for generating W3C Verifiable Credentials
 pub struct CredentialIssuer {
     /// DID Manager for resolving DIDs
     did_manager: Arc<DIDManager>,
+    
+    /// On-chain revocation manager
+    revocation_manager: Arc<OnChainRevocationManager>,
     
     /// Issuer's signing key
     signing_key: SigningKey,
@@ -46,15 +51,17 @@ impl CredentialIssuer {
     ///
     /// # Arguments
     /// * `did_manager` - DID Manager for resolving DIDs
+    /// * `revocation_manager` - On-chain revocation manager for RevocationBitmap2022
     /// * `config` - Credential configuration
     pub async fn new(
         did_manager: Arc<DIDManager>,
+        revocation_manager: Arc<OnChainRevocationManager>,
         config: CredentialConfig,
     ) -> IdentityResult<Self> {
         info!(
             issuer_name = %config.issuer_name,
             validity_days = config.validity_secs / 86400,
-            "Initializing Credential Issuer"
+            "Initializing Credential Issuer with RevocationBitmap2022"
         );
 
         // Generate a new signing key for the issuer
@@ -66,6 +73,7 @@ impl CredentialIssuer {
 
         Ok(Self {
             did_manager,
+            revocation_manager,
             signing_key,
             issuer_did,
             config,
@@ -81,7 +89,7 @@ impl CredentialIssuer {
     /// * `metadata` - Optional additional metadata
     ///
     /// # Returns
-    /// A DeviceCredential with proof (signature)
+    /// A DeviceCredential with proof (signature) and credentialStatus for revocation
     pub async fn issue_credential(
         &self,
         subject_did: &str,
@@ -92,7 +100,7 @@ impl CredentialIssuer {
         info!(
             subject_did = %subject_did,
             device_type = ?device_type,
-            "Issuing credential for device"
+            "Issuing credential for device with RevocationBitmap2022"
         );
 
         let now = Utc::now();
@@ -114,6 +122,15 @@ impl CredentialIssuer {
             firmware_version: metadata.as_ref().and_then(|m| m.firmware_version.clone()),
         };
 
+        // Create credential status for RevocationBitmap2022
+        let credential_status = self.revocation_manager.create_credential_status(&credential_id);
+        
+        debug!(
+            credential_id = %credential_id,
+            revocation_index = %credential_status.revocation_bitmap_index,
+            "Allocated revocation index for credential"
+        );
+
         // Create the credential (without proof first)
         let mut credential = DeviceCredential {
             id: credential_id.clone(),
@@ -129,6 +146,7 @@ impl CredentialIssuer {
             issuance_date: now,
             expiration_date: expiration,
             credential_subject: subject,
+            credential_status: Some(credential_status),
             proof: None,
         };
 
@@ -139,7 +157,7 @@ impl CredentialIssuer {
         info!(
             credential_id = %credential_id,
             expires_at = %expiration,
-            "Credential issued successfully"
+            "Credential issued successfully with revocation support"
         );
 
         Ok(credential)
@@ -172,13 +190,13 @@ impl CredentialIssuer {
         })
     }
 
-    /// Verify a credential's signature
+    /// Verify a credential's signature and revocation status
     ///
     /// # Arguments
     /// * `credential` - The credential to verify
     ///
     /// # Returns
-    /// Ok(()) if valid, Err if invalid
+    /// Ok(()) if valid, Err if invalid or revoked
     pub async fn verify_credential(&self, credential: &DeviceCredential) -> IdentityResult<()> {
         debug!(
             credential_id = %credential.id,
@@ -190,6 +208,27 @@ impl CredentialIssuer {
             return Err(IdentityError::CredentialExpired {
                 expiration: credential.expiration_date.to_rfc3339(),
             });
+        }
+
+        // Check on-chain revocation status if credentialStatus is present
+        if let Some(status) = &credential.credential_status {
+            if status.status_type == REVOCATION_SERVICE_TYPE {
+                let index: u32 = status.revocation_bitmap_index.parse()
+                    .map_err(|_| IdentityError::InvalidCredential(
+                        "Invalid revocationBitmapIndex".into()
+                    ))?;
+                
+                // Check if revoked in our local bitmap
+                if self.revocation_manager.is_revoked(index) {
+                    let info = self.revocation_manager.get_revocation_info(index);
+                    let reason = info.and_then(|i| i.reason).unwrap_or_else(|| "No reason provided".to_string());
+                    
+                    return Err(IdentityError::CredentialRevoked {
+                        credential_id: credential.id.clone(),
+                        reason,
+                    });
+                }
+            }
         }
 
         // Get the proof
@@ -311,6 +350,41 @@ impl CredentialIssuer {
     /// Get the issuer's public key
     pub fn public_key(&self) -> VerifyingKey {
         self.signing_key.verifying_key()
+    }
+    
+    /// Get the on-chain revocation manager
+    pub fn revocation_manager(&self) -> &Arc<OnChainRevocationManager> {
+        &self.revocation_manager
+    }
+    
+    /// Revoke a credential on-chain
+    ///
+    /// # Arguments
+    /// * `credential_id` - The credential ID to revoke
+    /// * `reason` - Optional reason for revocation
+    ///
+    /// # Returns
+    /// The revocation index if successful
+    pub fn revoke_credential(
+        &self,
+        credential_id: &str,
+        reason: Option<String>,
+    ) -> Result<u32, IdentityError> {
+        self.revocation_manager
+            .revoke_by_credential_id(credential_id, reason, Some("issuer".to_string()))
+            .map_err(|e| IdentityError::RevocationError(e.to_string()))
+    }
+    
+    /// Check if a credential is revoked
+    pub fn is_credential_revoked(&self, credential_id: &str) -> Option<bool> {
+        self.revocation_manager.is_revoked_by_credential_id(credential_id)
+    }
+    
+    /// Get the revocation bitmap service endpoint for the issuer's DID Document
+    pub fn get_revocation_service_endpoint(&self) -> Result<String, IdentityError> {
+        self.revocation_manager
+            .encode_service_endpoint()
+            .map_err(|e| IdentityError::RevocationError(e.to_string()))
     }
 }
 

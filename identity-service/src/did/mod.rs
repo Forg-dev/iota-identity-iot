@@ -14,6 +14,9 @@ use tracing::{debug, info, warn};
 
 // Core Identity types
 use identity_iota::iota::{IotaDocument, IotaDID};
+use identity_iota::document::Service;
+use identity_iota::core::Url;
+use identity_iota::did::DID;
 
 // Storage for cryptographic operations
 use identity_iota::storage::{
@@ -581,6 +584,131 @@ impl DIDManager {
     /// Get a reference to the storage
     pub fn storage(&self) -> Arc<IdentityStorage> {
         Arc::clone(&self.storage)
+    }
+    
+    // =========================================================================
+    // REVOCATIONBITMAP2022 SERVICE MANAGEMENT
+    // =========================================================================
+    
+    /// Update the RevocationBitmap2022 service in a DID Document
+    /// 
+    /// This method updates the issuer's DID Document with the new bitmap data URL
+    /// and publishes the update on-chain.
+    /// 
+    /// # Arguments
+    /// * `did` - The DID to update (must be controlled by this service)
+    /// * `service_fragment` - Fragment for the service (e.g., "revocation")
+    /// * `bitmap_data_url` - The data URL containing the encoded bitmap
+    /// 
+    /// # Returns
+    /// Ok(()) if successful, or an error
+    pub async fn update_revocation_service(
+        &self,
+        did: &str,
+        service_fragment: &str,
+        bitmap_data_url: &str,
+    ) -> IdentityResult<()> {
+        info!(did = %did, fragment = %service_fragment, "Updating RevocationBitmap2022 service on-chain");
+        
+        // Get control info for the DID
+        let control_info = {
+            let control_map = self.did_control_info.read();
+            control_map.get(did).cloned()
+        }.ok_or_else(|| IdentityError::UnauthorizedOperation(
+            format!("No control info for DID: {}. Cannot update DIDs not created by this service.", did)
+        ))?;
+        
+        if control_info.deactivated {
+            return Err(IdentityError::DIDAlreadyDeactivated(did.to_string()));
+        }
+        
+        // Resolve current document
+        let mut current_doc = self.resolve_did(did).await?;
+        
+        // Create the service ID
+        let service_id = current_doc.id().to_url().join(&format!("#{}", service_fragment))
+            .map_err(|e| IdentityError::DIDUpdateError(format!(
+                "Failed to create service ID: {}", e
+            )))?;
+        
+        // Remove existing revocation service if present
+        let _ = current_doc.remove_service(&service_id);
+        
+        // Create the new service with RevocationBitmap2022 type
+        let service_endpoint = Url::parse(bitmap_data_url)
+            .map_err(|e| IdentityError::DIDUpdateError(format!(
+                "Invalid bitmap data URL: {}", e
+            )))?;
+        
+        let service = Service::builder(Default::default())
+            .id(service_id.clone())
+            .type_("RevocationBitmap2022")
+            .service_endpoint(service_endpoint)
+            .build()
+            .map_err(|e| IdentityError::DIDUpdateError(format!(
+                "Failed to build service: {}", e
+            )))?;
+        
+        // Insert the new service
+        current_doc.insert_service(service)
+            .map_err(|e| IdentityError::DIDUpdateError(format!(
+                "Failed to insert service: {}", e
+            )))?;
+        
+        // Create identity client for publishing
+        let (identity_client, sender_address) = self.create_identity_client_for_did(&control_info).await?;
+        
+        // Request funds if needed
+        if self.network.has_faucet() {
+            info!(sender_address = %sender_address, "Requesting funds for revocation bitmap update");
+            request_funds(&sender_address)
+                .await
+                .map_err(|e| IdentityError::FaucetError(format!(
+                    "Failed to request funds: {}", e
+                )))?;
+            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        }
+        
+        // Publish the updated document
+        info!("Publishing RevocationBitmap2022 update to IOTA Rebased...");
+        
+        identity_client
+            .publish_did_document_update(current_doc, GAS_BUDGET_UPDATE_DID)
+            .await
+            .map_err(|e| IdentityError::DIDUpdateError(format!(
+                "Failed to publish DID document update: {}", e
+            )))?;
+        
+        info!(did = %did, "RevocationBitmap2022 service updated successfully on-chain");
+        
+        Ok(())
+    }
+    
+    /// Add initial RevocationBitmap2022 service to a newly created issuer DID
+    /// 
+    /// This should be called after creating the issuer DID to set up the revocation service.
+    pub async fn add_revocation_service_to_issuer(
+        &self,
+        bitmap_data_url: &str,
+    ) -> IdentityResult<String> {
+        let issuer_did = {
+            let guard = self.issuer_did.read();
+            guard.clone()
+        }.ok_or_else(|| IdentityError::DIDCreationError(
+            "Issuer DID not initialized".into()
+        ))?;
+        
+        let did_str = issuer_did.to_string();
+        
+        self.update_revocation_service(&did_str, "revocation", bitmap_data_url).await?;
+        
+        Ok(did_str)
+    }
+    
+    /// Get the issuer DID string if initialized
+    pub fn get_issuer_did_string(&self) -> Option<String> {
+        let guard = self.issuer_did.read();
+        guard.as_ref().map(|d| d.to_string())
     }
 }
 

@@ -143,8 +143,31 @@ pub struct DeviceCredential {
     #[serde(rename = "credentialSubject")]
     pub credential_subject: CredentialSubject,
     
+    /// Credential status for revocation (RevocationBitmap2022)
+    #[serde(rename = "credentialStatus", skip_serializing_if = "Option::is_none")]
+    pub credential_status: Option<CredentialStatus>,
+    
     /// Proof (signature)
     pub proof: Option<CredentialProof>,
+}
+
+/// Credential status for RevocationBitmap2022
+/// This links the credential to a revocation bitmap in the issuer's DID Document
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CredentialStatus {
+    /// Reference to the revocation service in issuer's DID Document
+    /// Format: "did:iota:testnet:0x...#revocation"
+    pub id: String,
+    
+    /// Type of revocation mechanism
+    /// Must be "RevocationBitmap2022"
+    #[serde(rename = "type")]
+    pub status_type: String,
+    
+    /// Index in the revocation bitmap
+    /// Each credential gets a unique index
+    #[serde(rename = "revocationBitmapIndex")]
+    pub revocation_bitmap_index: String,
 }
 
 /// Subject of a credential (the device being credentialed)
@@ -403,7 +426,92 @@ pub struct KeyRotationResponse {
     pub error: Option<String>,
 }
 
-/// Response from DID deactivation (on-chain revocation)
+// =============================================================================
+// ON-CHAIN REVOCATION (RevocationBitmap2022)
+// =============================================================================
+
+/// Request to revoke a credential on-chain using RevocationBitmap2022
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OnChainRevocationRequest {
+    /// The credential ID to revoke (urn:uuid:...)
+    pub credential_id: String,
+    
+    /// The revocation bitmap index from the credential's credentialStatus
+    pub revocation_index: u32,
+    
+    /// Reason for revocation (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Response from on-chain credential revocation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OnChainRevocationResponse {
+    /// Whether revocation succeeded
+    pub success: bool,
+    
+    /// The credential ID that was revoked
+    pub credential_id: String,
+    
+    /// The revocation index in the bitmap
+    pub revocation_index: u32,
+    
+    /// Timestamp of revocation
+    pub revoked_at: DateTime<Utc>,
+    
+    /// Whether the revocation is on-chain (always true for this type)
+    pub on_chain: bool,
+    
+    /// Transaction ID / Object ID on blockchain
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transaction_id: Option<String>,
+    
+    /// Error message if failed
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Request to check on-chain revocation status
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OnChainRevocationStatusRequest {
+    /// Issuer DID (to find the revocation service)
+    pub issuer_did: String,
+    
+    /// Revocation bitmap index to check
+    pub revocation_index: u32,
+}
+
+/// Response for on-chain revocation status check
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OnChainRevocationStatusResponse {
+    /// The issuer DID
+    pub issuer_did: String,
+    
+    /// The revocation index checked
+    pub revocation_index: u32,
+    
+    /// Whether the credential at this index is revoked
+    pub revoked: bool,
+    
+    /// Timestamp when status was checked
+    pub checked_at: DateTime<Utc>,
+    
+    /// Whether this was checked on-chain (vs cached)
+    pub from_chain: bool,
+}
+
+/// Request to deactivate a DID (on-chain revocation)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DIDDeactivationRequest {
+    /// DID to deactivate
+    pub did: String,
+    
+    /// Reason for deactivation
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Response from DID deactivation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DIDDeactivationResponse {
     /// Whether deactivation succeeded
@@ -414,6 +522,9 @@ pub struct DIDDeactivationResponse {
     
     /// Timestamp of deactivation
     pub deactivated_at: DateTime<Utc>,
+    
+    /// Whether the change is on-chain
+    pub on_chain: bool,
     
     /// Transaction ID on blockchain (if available)
     #[serde(skip_serializing_if = "Option::is_none")]

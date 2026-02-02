@@ -43,11 +43,18 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/device/register", post(register_device))
         .route("/api/v1/did/resolve/:did", get(resolve_did))
         .route("/api/v1/credential/verify", post(verify_credential))
-        // Revocation endpoints
+        // Revocation endpoints (in-memory)
         .route("/api/v1/credential/revoke", post(revoke_credential))
         .route("/api/v1/credential/status/:credential_id", get(get_credential_status))
+        // On-chain revocation (RevocationBitmap2022)
+        .route("/api/v1/credential/revoke-onchain", post(revoke_credential_onchain))
+        .route("/api/v1/credential/status-onchain/:index", get(get_credential_status_onchain))
+        .route("/api/v1/revocation/bitmap-stats", get(get_bitmap_stats))
+        // Issuer management
+        .route("/api/v1/issuer/initialize", post(initialize_issuer_did))
+        .route("/api/v1/issuer/status", get(get_issuer_status))
         // On-chain DID operations
-        .route("/api/v1/did/deactivate/:did", post(deactivate_did))  // NUOVA
+        .route("/api/v1/did/deactivate/:did", post(deactivate_did))
         .route("/api/v1/did/rotate-key/:did", post(rotate_key))
         // Cache management (admin)
         .route("/api/v1/admin/cache/clear", post(clear_caches))
@@ -294,9 +301,10 @@ async fn clear_caches(
 // REVOCATION HANDLERS
 // =============================================================================
 
-/// Revoke a credential
+/// Revoke a credential (in-memory revocation)
 ///
-/// Marks a credential as revoked. Once revoked, the credential will fail verification.
+/// Marks a credential as revoked in the service's revocation list.
+/// For on-chain revocation of the DID itself, use /api/v1/did/deactivate/:did
 ///
 /// # Request Body
 /// ```json
@@ -360,10 +368,316 @@ async fn get_credential_status(
 }
 
 // =============================================================================
+// ON-CHAIN REVOCATION (RevocationBitmap2022)
+// =============================================================================
+
+/// Revoke a credential on-chain using RevocationBitmap2022
+///
+/// This marks the credential as revoked in the on-chain bitmap.
+/// Unlike in-memory revocation, this is persistent and can be verified
+/// by any party that resolves the issuer's DID Document.
+///
+/// # Request Body
+/// ```json
+/// {
+///   "credential_id": "urn:uuid:...",
+///   "revocation_index": 5,
+///   "reason": "optional reason"
+/// }
+/// ```
+async fn revoke_credential_onchain(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<shared::types::OnChainRevocationRequest>,
+) -> Result<Json<shared::types::OnChainRevocationResponse>, ApiError> {
+    info!(
+        credential_id = %request.credential_id,
+        revocation_index = request.revocation_index,
+        "On-chain credential revocation request (RevocationBitmap2022)"
+    );
+    
+    // Step 1: Revoke in local bitmap
+    match state.onchain_revocation_manager.revoke(
+        request.revocation_index,
+        &request.credential_id,
+        request.reason.clone(),
+        Some("api".to_string()),
+    ) {
+        Ok(()) => {
+            // Invalidate from cache if present
+            state.cache.invalidate_credential(&request.credential_id).await;
+            
+            // Step 2: Publish updated bitmap to issuer's DID Document on-chain
+            let issuer_did = state.onchain_revocation_manager.issuer_did();
+            
+            // Check if we have an issuer DID on-chain to update
+            if state.did_manager.has_control(&issuer_did) {
+                // Encode the updated bitmap
+                match state.onchain_revocation_manager.encode_service_endpoint() {
+                    Ok(bitmap_data_url) => {
+                        info!("Publishing updated RevocationBitmap2022 to blockchain...");
+                        
+                        // Update the DID Document with new bitmap
+                        match state.did_manager.update_revocation_service(
+                            &issuer_did,
+                            "revocation",
+                            &bitmap_data_url,
+                        ).await {
+                            Ok(()) => {
+                                // Mark bitmap as published
+                                state.onchain_revocation_manager.mark_published();
+                                
+                                // Invalidate issuer DID from cache to force re-resolution
+                                state.cache.invalidate_did_document(&issuer_did).await;
+                                
+                                info!(
+                                    credential_id = %request.credential_id,
+                                    "Credential revoked and bitmap published on-chain"
+                                );
+                                
+                                Ok(Json(shared::types::OnChainRevocationResponse {
+                                    success: true,
+                                    credential_id: request.credential_id,
+                                    revocation_index: request.revocation_index,
+                                    revoked_at: chrono::Utc::now(),
+                                    on_chain: true,
+                                    transaction_id: None, // Could be extracted from IOTA response
+                                    error: None,
+                                }))
+                            }
+                            Err(e) => {
+                                error!("Failed to publish bitmap on-chain: {}", e);
+                                // Revocation is still valid locally, but not published
+                                Ok(Json(shared::types::OnChainRevocationResponse {
+                                    success: true,
+                                    credential_id: request.credential_id,
+                                    revocation_index: request.revocation_index,
+                                    revoked_at: chrono::Utc::now(),
+                                    on_chain: false,
+                                    transaction_id: None,
+                                    error: Some(format!("Revoked locally but failed to publish on-chain: {}", e)),
+                                }))
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to encode bitmap: {}", e);
+                        Ok(Json(shared::types::OnChainRevocationResponse {
+                            success: true,
+                            credential_id: request.credential_id,
+                            revocation_index: request.revocation_index,
+                            revoked_at: chrono::Utc::now(),
+                            on_chain: false,
+                            transaction_id: None,
+                            error: Some(format!("Revoked locally but failed to encode bitmap: {}", e)),
+                        }))
+                    }
+                }
+            } else {
+                // No issuer DID on-chain yet, revocation is only local
+                info!(
+                    "No on-chain issuer DID found. Revocation is local only. \
+                    Call POST /api/v1/issuer/initialize to create issuer DID on-chain."
+                );
+                Ok(Json(shared::types::OnChainRevocationResponse {
+                    success: true,
+                    credential_id: request.credential_id,
+                    revocation_index: request.revocation_index,
+                    revoked_at: chrono::Utc::now(),
+                    on_chain: false,
+                    transaction_id: None,
+                    error: Some("Revoked locally. Issuer DID not initialized on-chain.".into()),
+                }))
+            }
+        }
+        Err(e) => {
+            Ok(Json(shared::types::OnChainRevocationResponse {
+                success: false,
+                credential_id: request.credential_id,
+                revocation_index: request.revocation_index,
+                revoked_at: chrono::Utc::now(),
+                on_chain: false,
+                transaction_id: None,
+                error: Some(e.to_string()),
+            }))
+        }
+    }
+}
+
+/// Get on-chain revocation status by index
+///
+/// Check if a credential at a specific index is revoked in the bitmap.
+async fn get_credential_status_onchain(
+    State(state): State<Arc<AppState>>,
+    Path(index): Path<u32>,
+) -> Result<Json<shared::types::OnChainRevocationStatusResponse>, ApiError> {
+    let revoked = state.onchain_revocation_manager.is_revoked(index);
+    
+    Ok(Json(shared::types::OnChainRevocationStatusResponse {
+        issuer_did: state.onchain_revocation_manager.issuer_did().to_string(),
+        revocation_index: index,
+        revoked,
+        checked_at: chrono::Utc::now(),
+        from_chain: false, // Currently checking local bitmap; would be true if resolved from chain
+    }))
+}
+
+/// Get revocation bitmap statistics
+///
+/// Returns statistics about the revocation bitmap including:
+/// - Total credentials issued
+/// - Number of revoked credentials
+/// - Bitmap size
+async fn get_bitmap_stats(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let stats = state.onchain_revocation_manager.stats();
+    
+    Json(serde_json::json!({
+        "issuer_did": state.onchain_revocation_manager.issuer_did(),
+        "total_credentials_issued": stats.total_credentials_issued,
+        "revoked_count": stats.revoked_count,
+        "is_dirty": stats.is_dirty,
+        "serialized_size_bytes": stats.serialized_size_bytes,
+        "revocation_type": "RevocationBitmap2022"
+    }))
+}
+
+// =============================================================================
+// ISSUER DID MANAGEMENT
+// =============================================================================
+
+/// Initialize the issuer's DID on-chain with RevocationBitmap2022 service
+///
+/// This creates a DID for the Identity Service (issuer) on the IOTA blockchain
+/// and adds a RevocationBitmap2022 service to it. This must be called once
+/// before on-chain revocation can work properly.
+///
+/// # Request
+/// POST /api/v1/issuer/initialize
+///
+/// # Response
+/// - `issuer_did`: The created DID
+/// - `revocation_service_id`: The service ID for revocation
+/// - `on_chain`: Whether the DID was published on-chain
+async fn initialize_issuer_did(
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, ApiError> {
+    info!("Initializing issuer DID on-chain with RevocationBitmap2022 service");
+    
+    // Check if already initialized
+    if let Some(existing_did) = state.did_manager.get_issuer_did_string() {
+        if state.did_manager.has_control(&existing_did) {
+            return Ok(Json(serde_json::json!({
+                "success": true,
+                "issuer_did": existing_did,
+                "revocation_service_id": format!("{}#revocation", existing_did),
+                "on_chain": true,
+                "message": "Issuer DID already initialized"
+            })));
+        }
+    }
+    
+    // Create issuer DID on-chain
+    match state.did_manager.get_or_create_issuer_did().await {
+        Ok(issuer_did) => {
+            let did_str = issuer_did.to_string();
+            info!(issuer_did = %did_str, "Issuer DID created on-chain");
+            
+            // Update the revocation manager with the real issuer DID
+            state.onchain_revocation_manager.set_issuer_did(did_str.clone());
+            
+            // Encode initial empty bitmap
+            let bitmap_data_url = state.onchain_revocation_manager.encode_service_endpoint()
+                .map_err(|e| ApiError::Internal(format!("Failed to encode bitmap: {}", e)))?;
+            
+            // Add RevocationBitmap2022 service to the DID Document
+            match state.did_manager.update_revocation_service(
+                &did_str,
+                "revocation",
+                &bitmap_data_url,
+            ).await {
+                Ok(()) => {
+                    info!(
+                        issuer_did = %did_str,
+                        "RevocationBitmap2022 service added to issuer DID"
+                    );
+                    
+                    Ok(Json(serde_json::json!({
+                        "success": true,
+                        "issuer_did": did_str,
+                        "revocation_service_id": format!("{}#revocation", did_str),
+                        "on_chain": true,
+                        "message": "Issuer DID created with RevocationBitmap2022 service"
+                    })))
+                }
+                Err(e) => {
+                    error!("Failed to add revocation service: {}", e);
+                    // DID was created but service not added
+                    Ok(Json(serde_json::json!({
+                        "success": true,
+                        "issuer_did": did_str,
+                        "revocation_service_id": null,
+                        "on_chain": true,
+                        "message": format!("Issuer DID created but revocation service failed: {}", e)
+                    })))
+                }
+            }
+        }
+        Err(e) => {
+            error!("Failed to create issuer DID: {}", e);
+            Err(ApiError::Internal(format!("Failed to create issuer DID: {}", e)))
+        }
+    }
+}
+
+/// Get the current issuer status
+///
+/// Returns information about the issuer DID and revocation service status.
+///
+/// # Request
+/// GET /api/v1/issuer/status
+async fn get_issuer_status(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let issuer_did = state.onchain_revocation_manager.issuer_did().to_string();
+    let has_control = state.did_manager.has_control(&issuer_did);
+    let onchain_issuer = state.did_manager.get_issuer_did_string();
+    let stats = state.onchain_revocation_manager.stats();
+    
+    Json(serde_json::json!({
+        "issuer_did": issuer_did,
+        "on_chain_did": onchain_issuer,
+        "has_control": has_control,
+        "initialized_on_chain": onchain_issuer.is_some() && has_control,
+        "revocation_bitmap": {
+            "total_credentials_issued": stats.total_credentials_issued,
+            "revoked_count": stats.revoked_count,
+            "needs_publish": stats.is_dirty,
+        },
+        "instructions": if !has_control {
+            "Call POST /api/v1/issuer/initialize to create issuer DID on-chain"
+        } else {
+            "Issuer DID is ready. Revocations will be published on-chain."
+        }
+    }))
+}
+
+// =============================================================================
 // DID DEACTIVATION (ON-CHAIN REVOCATION)
 // =============================================================================
 
 /// Deactivate a DID on the blockchain
+///
+/// This permanently deactivates the DID on IOTA Rebased. The DID will still
+/// be visible on IOTA Explorer but will be marked as deactivated.
+///
+/// # Important
+/// - This operation is IRREVERSIBLE
+/// - Only DIDs created by this service can be deactivated
+/// - The DID must not already be deactivated
+///
+/// # Request
+/// POST /api/v1/did/deactivate/:did
 async fn deactivate_did(
     State(state): State<Arc<AppState>>,
     Path(did): Path<String>,
@@ -380,6 +694,7 @@ async fn deactivate_did(
             success: false,
             did,
             deactivated_at: chrono::Utc::now(),
+            on_chain: false,
             transaction_id: None,
             error: Some("Cannot deactivate: DID was not created by this service".into()),
         }));
@@ -402,7 +717,8 @@ async fn deactivate_did(
                 success: true,
                 did,
                 deactivated_at: chrono::Utc::now(),
-                transaction_id: None,
+                on_chain: true,
+                transaction_id: None, // Could be extracted from the transaction result
                 error: None,
             }))
         }
@@ -411,6 +727,7 @@ async fn deactivate_did(
                 success: false,
                 did,
                 deactivated_at: chrono::Utc::now(),
+                on_chain: false,
                 transaction_id: None,
                 error: Some(e.to_string()),
             }))
@@ -422,20 +739,22 @@ async fn deactivate_did(
 // KEY ROTATION HANDLERS
 // =============================================================================
 
-/// Rotate a device's verification key
-///
-/// Updates the DID Document with a new verification method.
-/// The old key is optionally revoked.
-///
-/// # Note
-/// This is a complex operation that requires:
-/// 1. Resolving the existing DID Document
-/// 2. Adding a new verification method
-/// 3. Publishing the updated document to blockchain
-///
-/// Current implementation is a placeholder - full implementation requires
-/// signing capability for the existing DID.
 /// Rotate a device's verification key on the blockchain
+///
+/// Updates the DID Document with a new verification method on IOTA Rebased.
+/// The new key is added to the document and published on-chain.
+///
+/// # Important
+/// - Only DIDs created by this service can have their keys rotated
+/// - The DID must not be deactivated
+/// - This is an ON-CHAIN operation (costs gas, takes ~5-7 seconds)
+///
+/// # Request Body
+/// ```json
+/// {
+///   "new_public_key": "64-hex-chars-ed25519-public-key"
+/// }
+/// ```
 async fn rotate_key(
     State(state): State<Arc<AppState>>,
     Path(did): Path<String>,
@@ -502,7 +821,7 @@ fn convert_to_simplified(doc: &identity_iota::iota::IotaDocument) -> SimplifiedD
     // Extract verification methods from the document
     let verification_methods: Vec<VerificationMethod> = doc
         .methods(None)
-        .into_iter()  // Aggiunto into_iter()
+        .into_iter()
         .map(|method| {
             // Get the public key in multibase format
             let public_key_multibase = method
@@ -532,7 +851,7 @@ fn convert_to_simplified(doc: &identity_iota::iota::IotaDocument) -> SimplifiedD
     let authentication: Option<Vec<String>> = {
         let auth_methods: Vec<String> = doc
             .methods(Some(identity_iota::verification::MethodScope::authentication()))
-            .into_iter()  // Aggiunto into_iter()
+            .into_iter()
             .map(|m| m.id().to_string())
             .collect();
         if auth_methods.is_empty() { None } else { Some(auth_methods) }
@@ -543,10 +862,22 @@ fn convert_to_simplified(doc: &identity_iota::iota::IotaDocument) -> SimplifiedD
         let services: Vec<shared::types::Service> = doc
             .service()
             .iter()
-            .map(|s| shared::types::Service {
-                id: s.id().to_string(),
-                service_type: s.type_().first().cloned().unwrap_or_default(),  // Usa first() invece di to_string()
-                service_endpoint: s.service_endpoint().to_string(),
+            .map(|s| {
+                // Handle OneOrSet<String> by getting the first type
+                let service_type = s.type_()
+                    .iter()
+                    .next()
+                    .cloned()
+                    .unwrap_or_else(|| "unknown".to_string());
+                
+                // Handle service endpoint
+                let service_endpoint = format!("{:?}", s.service_endpoint());
+                
+                shared::types::Service {
+                    id: s.id().to_string(),
+                    service_type,
+                    service_endpoint,
+                }
             })
             .collect();
         if services.is_empty() { None } else { Some(services) }
@@ -557,7 +888,7 @@ fn convert_to_simplified(doc: &identity_iota::iota::IotaDocument) -> SimplifiedD
         verification_methods,
         authentication,
         service,
-        updated: None,
+        updated: None, // IOTA documents don't have explicit updated timestamp in this format
     }
 }
 
