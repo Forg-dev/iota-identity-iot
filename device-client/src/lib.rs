@@ -15,12 +15,14 @@
 //! - Gas fees required for transactions
 //! - Different SDK and client APIs
 
+pub mod identity;
 pub mod resolver;
 pub mod storage;
 pub mod tls;
 pub mod registration;
 
 // Re-export commonly used types
+pub use identity::IdentityManager;
 pub use resolver::DIDResolver;
 pub use storage::SecureStorage;
 pub use tls::{TlsClient, TlsServer, DIDAuthenticator};

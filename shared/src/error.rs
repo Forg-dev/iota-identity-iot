@@ -73,8 +73,8 @@ pub enum IdentityError {
     InvalidCredential(String),
 
     /// Credential signature is invalid
-    #[error("Invalid credential signature")]
-    InvalidSignature,
+    #[error("Invalid credential signature: {0}")]
+    InvalidSignature(String),
 
     // =========================================================================
     // CRYPTOGRAPHY ERRORS
@@ -272,7 +272,7 @@ impl IdentityError {
             | IdentityError::CredentialRevoked { .. }
             | IdentityError::RevocationError(_)
             | IdentityError::InvalidCredential(_)
-            | IdentityError::InvalidSignature => "credential",
+            | IdentityError::InvalidSignature(_) => "credential",
 
             IdentityError::InvalidPublicKey(_)
             | IdentityError::InvalidPrivateKey(_)
@@ -333,7 +333,7 @@ mod tests {
         let err = IdentityError::DIDNotFound("did:iota:test".into());
         assert_eq!(err.category(), "did");
 
-        let err = IdentityError::InvalidSignature;
+        let err = IdentityError::InvalidSignature("test".into());
         assert_eq!(err.category(), "credential");
 
         let err = IdentityError::TLSHandshakeError("test".into());

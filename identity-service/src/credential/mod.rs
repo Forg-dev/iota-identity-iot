@@ -280,11 +280,11 @@ impl CredentialIssuer {
         ))?;
 
         let signature = ed25519_dalek::Signature::from_slice(&signature_bytes)
-            .map_err(|_e| IdentityError::InvalidSignature)?;
+            .map_err(|e| IdentityError::InvalidSignature(e.to_string()))?;
 
         // Verify
         public_key.verify_strict(canonical.as_bytes(), &signature)
-            .map_err(|_| IdentityError::InvalidSignature)?;
+            .map_err(|e| IdentityError::InvalidSignature(e.to_string()))?;
 
         Ok(())
     }

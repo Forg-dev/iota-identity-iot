@@ -27,7 +27,7 @@ use std::sync::Arc;
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 
-use device_client::{DeviceRegistrar, DIDResolver, TlsClient, TlsServer};
+use device_client::{DeviceRegistrar, DIDResolver, IdentityManager, TlsClient, TlsServer};
 use shared::{
     config::DeviceClientConfig,
     types::DeviceType,
@@ -47,6 +47,10 @@ struct Cli {
     /// IOTA network (testnet, devnet, mainnet, local)
     #[arg(long, default_value = "testnet")]
     network: String,
+
+    /// Data storage directory
+    #[arg(long, default_value = "./device-data")]
+    data_dir: String,
 }
 
 #[derive(Subcommand)]
@@ -62,8 +66,26 @@ enum Commands {
         capabilities: String,
     },
 
+    /// Re-register this device (creates new identity)
+    Reregister {
+        /// Device type (sensor, gateway, actuator, controller, edge, generic)
+        #[arg(long, short = 't', default_value = "generic")]
+        device_type: String,
+
+        /// Device capabilities (comma-separated)
+        #[arg(long, short = 'c', default_value = "")]
+        capabilities: String,
+    },
+
     /// Show device identity information
     Show,
+
+    /// Sign a message with the device's private key
+    Sign {
+        /// Message to sign
+        #[arg(long, short = 'm')]
+        message: String,
+    },
 
     /// Connect to another device using TLS with DID authentication
     Connect {
@@ -85,6 +107,9 @@ enum Commands {
         #[arg(long, short = 'd')]
         did: String,
     },
+
+    /// Clear all stored device data
+    Clear,
 }
 
 #[tokio::main]
@@ -100,13 +125,20 @@ async fn main() -> Result<()> {
     let mut config = DeviceClientConfig::default();
     config.identity_service_url = cli.identity_service;
     config.network = shared::config::IotaNetwork::from_str(&cli.network);
+    config.storage.data_path = std::path::PathBuf::from(&cli.data_dir);
 
     match cli.command {
         Commands::Register { device_type, capabilities } => {
-            register_device(&config, &device_type, &capabilities).await?;
+            register_device(&config, &device_type, &capabilities, false).await?;
+        }
+        Commands::Reregister { device_type, capabilities } => {
+            register_device(&config, &device_type, &capabilities, true).await?;
         }
         Commands::Show => {
             show_identity(&config).await?;
+        }
+        Commands::Sign { message } => {
+            sign_message(&config, &message).await?;
         }
         Commands::Connect { addr } => {
             connect_to_device(&config, &addr).await?;
@@ -117,67 +149,98 @@ async fn main() -> Result<()> {
         Commands::Resolve { did } => {
             resolve_did(&config, &did).await?;
         }
+        Commands::Clear => {
+            clear_storage(&config).await?;
+        }
     }
 
     Ok(())
 }
 
-async fn register_device(config: &DeviceClientConfig, device_type: &str, capabilities: &str) -> Result<()> {
-    info!("Registering device...");
-
-    let device_type = match device_type.to_lowercase().as_str() {
+fn parse_device_type(s: &str) -> DeviceType {
+    match s.to_lowercase().as_str() {
         "sensor" => DeviceType::Sensor,
         "gateway" => DeviceType::Gateway,
         "actuator" => DeviceType::Actuator,
         "controller" => DeviceType::Controller,
         "edge" => DeviceType::Edge,
         _ => DeviceType::Generic,
-    };
+    }
+}
 
-    let capabilities: Vec<String> = capabilities
-        .split(',')
+fn parse_capabilities(s: &str) -> Vec<String> {
+    s.split(',')
         .filter(|s| !s.is_empty())
         .map(|s| s.trim().to_string())
-        .collect();
+        .collect()
+}
+
+async fn register_device(
+    config: &DeviceClientConfig, 
+    device_type: &str, 
+    capabilities: &str,
+    force: bool,
+) -> Result<()> {
+    info!("Registering device...");
+
+    let device_type = parse_device_type(device_type);
+    let capabilities = parse_capabilities(capabilities);
 
     let mut registrar = DeviceRegistrar::new(config).await?;
     
-    if registrar.is_registered() {
+    if registrar.is_registered() && !force {
         println!("Device already registered!");
         println!("DID: {}", registrar.did().unwrap_or("unknown"));
-        println!("\nUse 're-register' to register with a new identity.");
+        println!("\nUse 'reregister' to create a new identity.");
         return Ok(());
     }
 
-    let response = registrar.register(device_type, capabilities).await?;
+    let response = if force {
+        registrar.re_register(device_type, capabilities).await?
+    } else {
+        registrar.register(device_type, capabilities).await?
+    };
 
     println!("\n✓ Device registered successfully!");
     println!("  DID: {}", response.did);
     println!("  Object ID: {}", response.object_id);
     println!("  Credential expires: {}", response.credential_expires_at);
+    println!("\n  Private key stored securely in: {}/private_key.hex", config.storage.data_path.display());
 
     Ok(())
 }
 
 async fn show_identity(config: &DeviceClientConfig) -> Result<()> {
-    let storage = device_client::SecureStorage::new(&config.storage).await?;
-
-    if let Some(identity) = storage.load_identity().await? {
-        println!("\nDevice Identity:");
-        println!("  DID: {}", identity.did);
-        println!("  Object ID: {}", identity.object_id);
-        println!("  Type: {:?}", identity.device_type);
-        println!("  Capabilities: {:?}", identity.capabilities);
-        println!("  Created: {}", identity.created_at);
-        println!("  Status: {:?}", identity.status);
-
-        if let Some(jwt) = storage.load_credential_jwt().await? {
-            println!("\nCredential JWT stored: {} chars", jwt.len());
+    let manager = IdentityManager::new(config).await?;
+    
+    let info = manager.info();
+    println!("{}", info);
+    
+    if manager.is_initialized() {
+        if manager.is_credential_expired() {
+            println!("\n⚠ WARNING: Credential has expired! Run 'reregister' to get a new one.");
+        } else if manager.credential_expires_soon(24) {
+            println!("\n⚠ WARNING: Credential expires within 24 hours.");
         }
-    } else {
-        println!("\nNo device identity found.");
-        println!("Run 'device-client register' to register this device.");
     }
+
+    Ok(())
+}
+
+async fn sign_message(config: &DeviceClientConfig, message: &str) -> Result<()> {
+    let manager = IdentityManager::new(config).await?;
+    
+    if !manager.is_initialized() {
+        println!("Device not registered. Run 'register' first.");
+        return Ok(());
+    }
+    
+    let signature = manager.sign_challenge(message)?;
+    
+    println!("\nMessage: {}", message);
+    println!("Signature: {}", signature);
+    println!("\nPublic Key: {}", manager.public_key_hex().unwrap_or_default());
+    println!("DID: {}", manager.did().unwrap_or("unknown"));
 
     Ok(())
 }
@@ -185,19 +248,21 @@ async fn show_identity(config: &DeviceClientConfig) -> Result<()> {
 async fn connect_to_device(config: &DeviceClientConfig, addr: &str) -> Result<()> {
     info!(addr = %addr, "Connecting to device");
 
-    let storage = device_client::SecureStorage::new(&config.storage).await?;
+    let manager = IdentityManager::new(config).await?;
     
-    let identity = storage.load_identity().await?
-        .ok_or_else(|| anyhow::anyhow!("Device not registered"))?;
+    if !manager.is_initialized() {
+        println!("Device not registered. Run 'register' first.");
+        return Ok(());
+    }
     
-    let credential_jwt = storage.load_credential_jwt().await?
-        .ok_or_else(|| anyhow::anyhow!("No credential stored"))?;
+    let did = manager.did().unwrap().to_string();
+    let credential_jwt = manager.credential_jwt().unwrap().to_string();
 
     let resolver = Arc::new(DIDResolver::new(config).await?);
     
     let client = TlsClient::new(
         resolver,
-        identity.did.clone(),
+        did,
         credential_jwt,
         config.tls.clone(),
     )?;
@@ -216,26 +281,28 @@ async fn connect_to_device(config: &DeviceClientConfig, addr: &str) -> Result<()
 async fn start_server(config: &DeviceClientConfig, port: u16) -> Result<()> {
     info!(port = port, "Starting TLS server");
 
-    let storage = device_client::SecureStorage::new(&config.storage).await?;
+    let manager = IdentityManager::new(config).await?;
     
-    let identity = storage.load_identity().await?
-        .ok_or_else(|| anyhow::anyhow!("Device not registered"))?;
-    
-    let credential_jwt = storage.load_credential_jwt().await?
-        .ok_or_else(|| anyhow::anyhow!("No credential stored"))?;
+    if !manager.is_initialized() {
+        println!("Device not registered. Run 'register' first.");
+        return Ok(());
+    }
+
+    let did = manager.did().unwrap().to_string();
+    let credential_jwt = manager.credential_jwt().unwrap().to_string();
 
     let resolver = Arc::new(DIDResolver::new(config).await?);
     
     let server = TlsServer::new(
         resolver,
-        identity.did.clone(),
+        did.clone(),
         credential_jwt,
         config.tls.clone(),
     )?;
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
     println!("\n✓ Server listening on port {}", port);
-    println!("  DID: {}", identity.did);
+    println!("  DID: {}", did);
 
     loop {
         let (stream, addr) = listener.accept().await?;
@@ -265,6 +332,24 @@ async fn resolve_did(config: &DeviceClientConfig, did: &str) -> Result<()> {
     println!("{}", serde_json::to_string_pretty(&*document)?);
     println!("\nResolved in {:?}", elapsed);
     println!("Cached: {}", resolver.is_cached(did).await);
+
+    Ok(())
+}
+
+async fn clear_storage(config: &DeviceClientConfig) -> Result<()> {
+    println!("This will delete all stored device data including the private key.");
+    println!("Are you sure? Type 'yes' to confirm:");
+    
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    
+    if input.trim().to_lowercase() == "yes" {
+        let mut storage = device_client::SecureStorage::new(&config.storage).await?;
+        storage.clear().await?;
+        println!("✓ All device data cleared.");
+    } else {
+        println!("Cancelled.");
+    }
 
     Ok(())
 }
