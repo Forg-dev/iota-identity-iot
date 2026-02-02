@@ -736,6 +736,7 @@ mod tests {
                 model: None,
                 firmware_version: None,
             },
+            credential_status: None,
             proof: None,
         };
         

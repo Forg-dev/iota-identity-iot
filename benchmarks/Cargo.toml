@@ -1,0 +1,48 @@
+[package]
+name = "benchmarks"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+# Workspace crates
+shared = { path = "../shared" }
+identity-service = { path = "../identity-service" }
+device-client = { path = "../device-client" }
+
+# Async
+tokio.workspace = true
+async-trait.workspace = true
+
+# HTTP client
+reqwest.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Crypto
+ed25519-dalek.workspace = true
+rand.workspace = true
+hex.workspace = true
+
+# Time
+chrono.workspace = true
+
+# Stats and reporting
+hdrhistogram.workspace = true
+
+# Error handling
+anyhow.workspace = true
+thiserror.workspace = true
+
+# Logging
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# CLI
+clap.workspace = true
+
+[[bin]]
+name = "benchmark"
+path = "src/main.rs"

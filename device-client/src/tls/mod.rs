@@ -89,6 +89,7 @@ pub struct TlsClient {
     connector: TlsConnector,
     
     /// DID Resolver for verifying server's DID
+    #[allow(dead_code)]
     resolver: Arc<DIDResolver>,
     
     /// Credential verifier

@@ -47,6 +47,7 @@ pub struct ParsedCredential {
 struct JwtHeader {
     alg: String,
     #[serde(default)]
+    #[allow(dead_code)]
     typ: Option<String>,
 }
 
@@ -78,6 +79,7 @@ struct VcContent {
     
     /// Credential types
     #[serde(rename = "type")]
+    #[allow(dead_code)]
     types: Option<Vec<String>>,
     
     /// Issuer
@@ -116,6 +118,7 @@ struct CredentialSubject {
 struct CredentialStatus {
     /// Status type (should be "RevocationBitmap2022")
     #[serde(rename = "type")]
+    #[allow(dead_code)]
     status_type: String,
     
     /// Revocation bitmap index

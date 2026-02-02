@@ -1,254 +1,270 @@
-# IOTA Identity for IoT - Blockchain-based PKI Replacement
+# IOTA Identity for IoT
 
-> Decentralized PKI system using IOTA Rebased for IoT device authentication
+A decentralized Public Key Infrastructure (PKI) system for Internet of Things devices, built on IOTA Rebased blockchain. This project explores how Decentralized Identifiers (DIDs) and Verifiable Credentials can replace traditional Certificate Authorities for authenticating IoT devices.
 
-## Overview
+## About This Project
 
-This project demonstrates how **IOTA Rebased** can replace traditional PKI (Certificate Authorities) for TLS authentication between IoT devices.
+This is a thesis project investigating whether blockchain-based identity management can offer practical advantages over traditional PKI in IoT contexts. The main questions we're trying to answer:
 
-### Key Features
+- Can we achieve equivalent security without relying on Certificate Authorities?
+- Is revocation checking faster with an on-chain bitmap compared to OCSP/CRL?
+- Can devices verify each other's identities offline (with cached data)?
+- What are the trade-offs in terms of latency, scalability, and complexity?
 
-- **DIDs** (Decentralized Identifiers) replace X.509 certificates
-- **IOTA Rebased blockchain** replaces centralized Certificate Authorities  
-- **Verifiable Credentials** replace CA-signed certificates
-- **Scalable** to 100,000+ devices
+The system is fully functional on IOTA's testnet and demonstrates the complete lifecycle: device registration, credential issuance, mutual TLS authentication, and credential revocation.
+
+## What's Implemented
+
+The project consists of two main components:
+
+**Identity Service** - A backend server that acts as the credential issuer. It creates DIDs on the blockchain, issues JWT-based Verifiable Credentials, and manages revocation through an on-chain bitmap (RevocationBitmap2022).
+
+**Device Client** - A command-line tool that simulates an IoT device. It can register with the Identity Service, store its credentials locally, and establish TLS connections with other devices using DID-based mutual authentication.
+
+Both components are complete and tested. The only remaining work is the benchmarking suite for collecting performance data.
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    IOTA Rebased Network                     │
-│  ┌─────────────────┐  ┌─────────────────┐                   │
-│  │ Identity Package│  │   DID Objects   │                   │
-│  │  (Move Smart    │  │  (On-chain      │                   │
-│  │   Contract)     │  │   Storage)      │                   │
-│  └────────┬────────┘  └────────┬────────┘                   │
-└───────────┼────────────────────┼────────────────────────────┘
-            │                    │
-    ┌───────┴────────────────────┴───────┐
-    │         Identity Service           │
-    │  ┌──────────┐  ┌──────────────┐    │
-    │  │   DID    │  │  Credential  │    │
-    │  │ Manager  │  │   Issuer     │    │
-    │  └──────────┘  └──────────────┘    │
-    │  ┌──────────┐  ┌──────────────┐    │
-    │  │  Cache   │  │   REST API   │    │
-    │  │ (Moka)   │  │   (Axum)     │    │
-    │  └──────────┘  └──────────────┘    │
-    └───────────────┬────────────────────┘
-                    │
-    ┌───────────────┼───────────────┐
-    │               │               │
-┌───┴───┐       ┌───┴───┐       ┌───┴───┐
-│Device │       │Device │       │Device │
-│Client │◄─────►│Client │◄─────►│Client │
-│ (TLS) │       │ (TLS) │       │ (TLS) │
-└───────┘       └───────┘       └───────┘
+                         IOTA Rebased Testnet
+                        (api.testnet.iota.cafe)
+    ┌──────────────────────────────────────────────────────────┐
+    │  Identity Package (Move Smart Contract)                   │
+    │  - DID Documents stored as on-chain objects               │
+    │  - RevocationBitmap2022 embedded in service endpoints     │
+    └──────────────────────────────────────────────────────────┘
+                                 │
+                                 │ IOTA SDK
+                                 ▼
+    ┌──────────────────────────────────────────────────────────┐
+    │                    Identity Service                       │
+    │                                                           │
+    │  DID Manager         Credential Issuer    Revocation Mgr  │
+    │  - Create/Resolve    - Issue JWTs         - Revoke        │
+    │  - Rotate keys       - Verify             - Check status  │
+    │  - Deactivate        - Ed25519 signing    - Roaring bitmap│
+    │                                                           │
+    │  Cache (L1+L2)                     REST API (Axum)        │
+    └──────────────────────────────────────────────────────────┘
+                                 │
+                                 │ HTTP
+                                 ▼
+    ┌──────────────────────────────────────────────────────────┐
+    │                     Device Client                         │
+    │                                                           │
+    │  Identity Manager    Secure Storage       TLS Module      │
+    │  - Load/save         - Private key        - Client/Server │
+    │  - Sign challenges   - Credentials        - Verification  │
+    │                                                           │
+    │  Registrar                          DID Resolver + Cache  │
+    └──────────────────────────────────────────────────────────┘
 ```
-
-## IOTA Rebased vs Stardust
-
-**IMPORTANT**: This project uses **IOTA Rebased** APIs, NOT the older Stardust APIs.
-
-| Component | Stardust (OLD) | Rebased (NEW) |
-|-----------|---------------|---------------|
-| SDK | `iota-sdk` (crates.io) | `iota-sdk` (github.com/iotaledger/iota) |
-| Identity | `identity_iota` v1.5 | `identity_iota` (github.com/iotaledger/identity) |
-| Ledger | UTXO (Alias Outputs) | Object-based (Move VM) |
-| Consensus | Nakamoto-like | Mysticeti (DPoS) |
-| Fees | Feeless | Gas required |
-| Client | `IotaIdentityClient` | `IdentityClient` / `IdentityClientReadOnly` |
 
 ## Project Structure
 
 ```
 iota-identity-iot/
 ├── Cargo.toml                 # Workspace configuration
-├── shared/                    # Shared types, errors, constants
+├── README.md
+├── MANUAL_TESTS.md            # Testing guide
+│
+├── shared/                    # Common library
 │   └── src/
-│       ├── lib.rs
-│       ├── config.rs          # Configuration management
-│       ├── constants.rs       # IOTA endpoints, Package IDs
+│       ├── config.rs          # Network, timeouts, paths
 │       ├── error.rs           # Error types
-│       └── types.rs           # Data structures
-├── identity-service/          # Backend service
+│       └── types.rs           # DID, Credential, API types
+│
+├── identity-service/          # Backend (the Issuer)
 │   └── src/
-│       ├── main.rs            # Service entry point
-│       ├── lib.rs
-│       ├── api/               # REST API (Axum)
-│       │   └── mod.rs
-│       ├── cache/             # DID & Credential caching
-│       │   └── mod.rs
-│       ├── credential/        # W3C VC issuance
-│       │   └── mod.rs
-│       └── did/               # IOTA Rebased DID operations
-│           └── mod.rs
-├── device-client/             # Client library & CLI
+│       ├── main.rs            # Server entry point
+│       ├── api/mod.rs         # REST endpoints
+│       ├── did/mod.rs         # DID operations
+│       ├── credential/mod.rs  # Credential issuance
+│       ├── revocation/bitmap.rs
+│       └── cache/mod.rs
+│
+├── device-client/             # IoT device simulator
 │   └── src/
-│       ├── main.rs            # CLI entry point
-│       ├── lib.rs
-│       ├── registration/      # Device registration
-│       │   └── mod.rs
-│       ├── resolver/          # DID resolution
-│       │   └── mod.rs
-│       ├── storage/           # Secure local storage
-│       │   └── mod.rs
-│       └── tls/               # TLS with DID auth
-│           └── mod.rs
-├── docs/                      # Documentation
-├── examples/                  # Example code
-├── benches/                   # Benchmarks
-└── scripts/                   # Utility scripts
+│       ├── main.rs            # CLI
+│       ├── identity/mod.rs
+│       ├── storage/mod.rs
+│       ├── registration/mod.rs
+│       ├── resolver/mod.rs
+│       └── tls/
+│           ├── mod.rs         # TLS client and server
+│           └── verifier.rs    # Credential verification
+│
+└── benchmarks/                # Performance tests (planned)
 ```
 
-## Quick Start
+## Getting Started
 
 ### Prerequisites
 
-```bash
-# Rust (latest stable)
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+You'll need Rust 1.75 or later and an internet connection to reach the IOTA testnet.
 
-# Required environment variables
-export IOTA_IDENTITY_PKG_ID=0x222741bbdff74b42df48a7b4733185e9b24becb8ccfbafe8eac864ab4e4cc555
-export STRONGHOLD_PASSWORD=your_secure_password
-export IOTA_NETWORK=testnet
-```
-
-### Build
+### Building
 
 ```bash
 cd iota-identity-iot
 cargo build --release
 ```
 
-### Run Identity Service
+### Running the Identity Service
 
 ```bash
-cargo run --release --bin identity-service
+export STRONGHOLD_PASSWORD="your-password-here"
+cargo run --release --package identity-service
 ```
 
-### Register a Device
+On first run, the service creates an Issuer DID on the blockchain. This takes about 7 seconds. After that, you'll see:
 
-```bash
-cargo run --release --bin device-client -- register \
-    --type sensor \
-    --capabilities temperature,humidity
+```
+INFO Server running at http://0.0.0.0:8080
 ```
 
-### Test TLS Connection
+### Registering a Device
+
+You can register a device either through the API or using the CLI.
+
+**Using the API:**
 
 ```bash
-# Terminal 1: Start server
-cargo run --release --bin device-client -- server --port 8443
+PUBLIC_KEY=$(openssl rand -hex 32)
 
-# Terminal 2: Connect as client
-cargo run --release --bin device-client -- connect --addr localhost:8443
-```
-
-## API Endpoints
-
-### Identity Service (default: http://localhost:8080)
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/health` | Health check |
-| POST | `/api/v1/device/register` | Register new device |
-| GET | `/api/v1/did/resolve/:did` | Resolve DID |
-| POST | `/api/v1/credential/verify` | Verify credential |
-| GET | `/metrics` | Service metrics |
-
-### Example: Register Device
-
-```bash
-curl -X POST http://localhost:8080/api/v1/device/register \
+curl -s -X POST http://localhost:8080/api/v1/device/register \
   -H "Content-Type: application/json" \
-  -d '{
-    "public_key": "a1b2c3...64_hex_chars",
-    "device_type": "sensor",
-    "capabilities": ["temperature", "humidity"]
-  }'
+  -d "{
+    \"public_key\": \"$PUBLIC_KEY\",
+    \"device_type\": \"sensor\",
+    \"capabilities\": [\"temperature\"]
+  }" | jq .
 ```
 
-Response:
-```json
-{
-  "did": "did:iota:0x...",
-  "object_id": "0x...",
-  "credential_jwt": "eyJ...",
-  "credential_expires_at": "2026-01-30T00:00:00Z"
-}
+**Using the CLI:**
+
+```bash
+./target/release/device-client \
+    --data-dir ./my-device \
+    register \
+    --device-type sensor \
+    --capabilities "temperature,humidity"
 ```
 
-## TLS + DID Authentication Protocol
+The device receives a DID and a Verifiable Credential (JWT), which it stores locally.
 
-```
-┌────────┐                                         ┌────────┐
-│ Client │                                         │ Server │
-└───┬────┘                                         └───┬────┘
-    │                                                  │
-    │──────────── TCP Connect ────────────────────────►│
-    │                                                  │
-    │◄─────────── TLS Handshake ─────────────────────►│
-    │         (self-signed certs OK)                   │
-    │                                                  │
-    │──────────── DID Auth Hello ─────────────────────►│
-    │         {did, credential_jwt, challenge}         │
-    │                                                  │
-    │◄─────────── DID Auth Hello ──────────────────────│
-    │         {did, credential_jwt, challenge}         │
-    │                                                  │
-    │  ┌─────────────────────────────────────────┐     │
-    │  │ Both verify DIDs via IOTA blockchain    │     │
-    │  │ - Resolve DID Document                  │     │
-    │  │ - Verify credential signature           │     │
-    │  │ - Check expiration/revocation           │     │
-    │  └─────────────────────────────────────────┘     │
-    │                                                  │
-    │◄─────────── Auth Success ────────────────────────│
-    │                                                  │
-    │═══════════ Authenticated Channel ═══════════════│
-    │                                                  │
+### Testing TLS Authentication
+
+This requires three terminal windows.
+
+**Terminal 1** - Keep the Identity Service running.
+
+**Terminal 2** - Register and start a server device:
+
+```bash
+./target/release/device-client --data-dir ./server-device register -t gateway
+./target/release/device-client --data-dir ./server-device server -p 8443
 ```
 
-## Benchmarking
+**Terminal 3** - Register and connect a client device:
 
-Benchmarks are planned for:
-
-- TLS handshake latency (with/without cache)
-- DID resolution time
-- Credential verification time
-- Throughput (connections/second)
-- Memory usage per device
-- Scalability to 100,000 devices
-
-## Dependencies
-
-### IOTA Rebased (from GitHub)
-
-```toml
-# Cargo.toml - USE THESE (not crates.io!)
-identity_iota = { git = "https://github.com/iotaledger/identity", branch = "main" }
-iota-sdk = { git = "https://github.com/iotaledger/iota", package = "iota-sdk" }
+```bash
+./target/release/device-client --data-dir ./client-device register -t sensor
+./target/release/device-client --data-dir ./client-device connect -a localhost:8443
 ```
 
-### Key Libraries
+If everything works, you'll see the authentication metrics:
 
-- `identity_iota` - IOTA DID operations
-- `identity_stronghold` - Secure key storage
-- `tokio` - Async runtime
-- `axum` - HTTP framework
-- `rustls` / `tokio-rustls` - TLS
-- `moka` - High-performance caching
-- `ed25519-dalek` - Cryptography
+```
+Connected and authenticated!
+  Peer DID: did:iota:testnet:0x...
 
-## License
+  Metrics:
+    TLS Handshake: 45ms
+    DID Auth: 120ms
+    Credential Verify: 80ms
+    Challenge-Response: 2ms
+    Total: 167ms
+```
 
-MIT OR Apache-2.0
+## API Overview
+
+The Identity Service exposes these endpoints:
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /health` | Health check |
+| `POST /api/v1/device/register` | Register a device (creates DID + credential) |
+| `GET /api/v1/did/resolve/:did` | Resolve a DID to its document |
+| `POST /api/v1/did/rotate-key/:did` | Rotate a DID's verification key |
+| `POST /api/v1/did/deactivate/:did` | Deactivate a DID |
+| `POST /api/v1/credential/verify` | Verify a credential JWT |
+| `POST /api/v1/credential/revoke-onchain` | Revoke a credential |
+| `GET /api/v1/credential/status-onchain/:index` | Check revocation status |
+
+See MANUAL_TESTS.md for detailed examples of each endpoint.
+
+## Device Client Commands
+
+```
+device-client [OPTIONS] <COMMAND>
+
+Commands:
+  register    Register with the Identity Service
+  reregister  Create a new identity (replaces existing)
+  show        Display current identity
+  sign        Sign a message
+  resolve     Resolve a DID
+  server      Start a TLS server
+  connect     Connect to another device
+  clear       Delete stored data
+
+Options:
+  --identity-service <URL>   [default: http://localhost:8080]
+  --data-dir <PATH>          [default: ./device-data]
+```
+
+## Performance
+
+These are rough numbers from testing on the IOTA testnet:
+
+| Operation | Time |
+|-----------|------|
+| DID Creation | ~7 seconds (blockchain transaction) |
+| DID Resolution (first time) | ~150-200ms |
+| DID Resolution (cached) | <1ms |
+| Credential Verification | <5ms |
+| Revocation Check | <1ms (bitmap lookup) |
+| Full TLS + DID Auth | ~150-250ms |
+
+The main advantage over traditional PKI is in revocation checking. OCSP typically adds 50-200ms of latency per check, while our bitmap lookup is essentially instant once the issuer's DID document is cached.
+
+## Security
+
+The system uses Ed25519 for all signatures, TLS 1.3 for transport encryption, and JWTs for credential encoding.
+
+The trust model differs from traditional PKI: instead of trusting a Certificate Authority, verifiers trust the IOTA blockchain consensus. The Issuer (Identity Service) must still be trusted to issue credentials correctly, but verification can happen without contacting the Issuer.
+
+## Testing
+
+MANUAL_TESTS.md contains a comprehensive guide with nine sections covering:
+
+- Basic service health checks
+- DID lifecycle (create, resolve, rotate, deactivate)
+- Credential issuance and verification
+- On-chain revocation
+- Device Client CLI operations
+- Persistence tests
+- Input validation
+- TLS with DID authentication
 
 ## References
 
-- [IOTA Identity Docs](https://docs.iota.org/iota-identity)
-- [IOTA Identity Workshop](https://docs.iota.org/developer/workshops/identity-workshop)
-- [W3C DID Specification](https://www.w3.org/TR/did-core/)
+- [W3C DID Core](https://www.w3.org/TR/did-core/)
 - [W3C Verifiable Credentials](https://www.w3.org/TR/vc-data-model/)
+- [IOTA Identity Documentation](https://wiki.iota.org/identity.rs/introduction)
+- [IOTA Rebased](https://docs.iota.org/)
+
+## License
+
+MIT

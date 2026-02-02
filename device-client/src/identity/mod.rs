@@ -278,7 +278,7 @@ impl std::fmt::Display for IdentityInfo {
 mod tests {
     use super::*;
     use base64::Engine;
-    use chrono::Duration;
+    use chrono::{Datelike, Duration};
 
     // Helper to create a fake JWT with given expiration timestamp
     fn create_fake_jwt_with_exp(exp_timestamp: i64) -> String {

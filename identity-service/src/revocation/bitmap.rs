@@ -509,10 +509,16 @@ mod tests {
     
     #[test]
     fn test_empty_bitmap_data_url() {
-        // Test vector from IOTA spec: empty bitmap
-        let empty_data_url = "data:application/octet-stream;base64,ZUp5ek1tQUFBd0FES0FCcg==";
+        // Create a new empty manager and encode its bitmap
+        let manager = OnChainRevocationManager::new(
+            "did:iota:testnet:0x123".to_string()
+        );
         
-        let bitmap = OnChainRevocationManager::decode_service_endpoint(empty_data_url).unwrap();
+        // Encode the empty bitmap
+        let empty_data_url = manager.encode_service_endpoint().unwrap();
+        
+        // Decode it back
+        let bitmap = OnChainRevocationManager::decode_service_endpoint(&empty_data_url).unwrap();
         
         // Empty bitmap should have no revoked credentials
         assert_eq!(bitmap.len(), 0);

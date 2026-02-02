@@ -194,6 +194,7 @@ pub struct CacheStats {
 }
 
 /// Wrapper that tracks cache hits/misses for metrics
+#[allow(dead_code)]
 pub struct CachedResolver<R> {
     resolver: R,
     cache: Arc<CacheManager>,

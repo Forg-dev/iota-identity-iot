@@ -828,6 +828,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "benchmarks"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "clap",
+ "device-client",
+ "ed25519-dalek",
+ "hdrhistogram",
+ "hex",
+ "identity-service",
+ "rand 0.8.5",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "shared",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "better_any"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2857,7 +2881,11 @@ version = "7.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "765c9198f173dd59ce26ff9f95ef0aafd0a0fe01fb9d72841bc5066a4c06511d"
 dependencies = [
+ "base64 0.21.7",
  "byteorder",
+ "crossbeam-channel",
+ "flate2",
+ "nom 7.1.3",
  "num-traits",
 ]
 

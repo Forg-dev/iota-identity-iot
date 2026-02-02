@@ -31,6 +31,7 @@ use crate::revocation::{OnChainRevocationManager, REVOCATION_SERVICE_TYPE};
 /// Credential Issuer for generating W3C Verifiable Credentials
 pub struct CredentialIssuer {
     /// DID Manager for resolving DIDs
+    #[allow(dead_code)]
     did_manager: Arc<DIDManager>,
     
     /// On-chain revocation manager
