@@ -44,6 +44,9 @@ pub const IOTA_FAUCET_TESTNET: &str = "https://faucet.testnet.iota.cafe/gas";
 /// Faucet endpoint for devnet
 pub const IOTA_FAUCET_DEVNET: &str = "https://faucet.devnet.iota.cafe/gas";
 
+/// Faucet endpoint for localnet
+pub const IOTA_FAUCET_LOCAL: &str = "http://127.0.0.1:9123/gas";
+
 // =============================================================================
 // GAS BUDGETS (IOTA Rebased requires gas for transactions)
 // =============================================================================
@@ -144,6 +147,9 @@ pub const DEFAULT_STRONGHOLD_PATH: &str = "./stronghold";
 /// Default path for device storage
 pub const DEFAULT_DEVICE_STORAGE_PATH: &str = "./device_storage";
 
+/// Default path for issuer identity storage (within home directory)
+pub const ISSUER_STORAGE_DIR: &str = ".iota-identity-issuer";
+
 // =============================================================================
 // DID METHOD
 // =============================================================================
@@ -200,7 +206,8 @@ pub fn get_faucet_for_network(network: &str) -> Option<&'static str> {
     match network.to_lowercase().as_str() {
         "testnet" => Some(IOTA_FAUCET_TESTNET),
         "devnet" => Some(IOTA_FAUCET_DEVNET),
-        _ => None, // No faucet for mainnet or local
+        "local" | "localnet" | "localhost" => Some(IOTA_FAUCET_LOCAL),
+        _ => None, // No faucet for mainnet
     }
 }
 
@@ -232,6 +239,8 @@ mod tests {
     fn test_get_faucet_for_network() {
         assert!(get_faucet_for_network("testnet").is_some());
         assert!(get_faucet_for_network("devnet").is_some());
+        assert!(get_faucet_for_network("local").is_some());
+        assert!(get_faucet_for_network("localnet").is_some());
         assert!(get_faucet_for_network("mainnet").is_none());
     }
 }

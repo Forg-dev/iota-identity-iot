@@ -165,11 +165,63 @@ impl DIDResolver {
 
     /// Convert IotaDocument to SimplifiedDIDDocument
     fn convert_document(&self, doc: &IotaDocument) -> SimplifiedDIDDocument {
+        use base64::Engine;
+        
+        // Extract verification methods
+        let mut verification_methods = Vec::new();
+        
+        // Get all verification methods from the document (pass None to get all)
+        for method in doc.methods(None) {
+            // Get the public key - try JWK (the method available in identity_iota)
+            let public_key_multibase = method
+                .data()
+                .try_public_key_jwk()
+                .ok()
+                .and_then(|jwk| {
+                    jwk.try_okp_params()
+                        .ok()
+                        .and_then(|params| {
+                            // 'x' is base64url encoded, decode and re-encode as base58
+                            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                                .decode(&params.x)
+                                .ok()
+                                .map(|bytes| format!("z{}", bs58::encode(&bytes).into_string()))
+                        })
+                })
+                .unwrap_or_else(|| "unknown".to_string());
+            
+            verification_methods.push(shared::types::VerificationMethod {
+                id: method.id().to_string(),
+                controller: method.controller().to_string(),
+                key_type: method.type_().to_string(),
+                public_key_multibase,
+            });
+        }
+        
+        // Extract services
+        let services: Vec<shared::types::Service> = doc.service()
+            .iter()
+            .map(|s| {
+                // Get the first service type from OneOrSet
+                let service_type = s.type_()
+                    .iter()
+                    .next()
+                    .cloned()
+                    .unwrap_or_else(|| "unknown".to_string());
+                
+                shared::types::Service {
+                    id: s.id().to_string(),
+                    service_type,
+                    service_endpoint: format!("{:?}", s.service_endpoint()),
+                }
+            })
+            .collect();
+        
         SimplifiedDIDDocument {
             id: doc.id().to_string(),
-            verification_methods: vec![], // Would extract from doc
+            verification_methods,
             authentication: None,
-            service: None,
+            service: if services.is_empty() { None } else { Some(services) },
             updated: None,
         }
     }

@@ -25,6 +25,7 @@
 
 use anyhow::Result;
 use std::sync::Arc;
+use std::path::PathBuf;
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 
@@ -33,6 +34,9 @@ use identity_service::{
     revocation::{RevocationManager, OnChainRevocationManager}, AppState,
 };
 use shared::config::IdentityServiceConfig;
+
+/// Default path for storing issuer identity
+const ISSUER_STORAGE_DIR: &str = ".iota-identity-service";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -56,6 +60,13 @@ async fn main() -> Result<()> {
         "Configuration loaded"
     );
 
+    // Determine storage path for issuer identity
+    let storage_path = dirs::home_dir()
+        .map(|home| home.join(ISSUER_STORAGE_DIR))
+        .unwrap_or_else(|| PathBuf::from(ISSUER_STORAGE_DIR));
+    
+    info!(path = ?storage_path, "Issuer identity storage path");
+
     // Initialize components
     info!("Initializing DID Manager...");
     let did_manager = Arc::new(DIDManager::new(&config).await?);
@@ -67,8 +78,8 @@ async fn main() -> Result<()> {
     let revocation_manager = Arc::new(RevocationManager::new());
 
     // Initialize On-Chain Revocation Manager (RevocationBitmap2022)
-    // Using placeholder issuer DID - in production this should be a real on-chain DID
-    let issuer_did = format!("did:iota:{}:issuer", config.network.to_string().to_lowercase());
+    // Using placeholder issuer DID - will be updated when issuer is initialized
+    let issuer_did = format!("did:iota:{}:issuer", config.network);
     info!(issuer_did = %issuer_did, "Initializing On-Chain Revocation Manager (RevocationBitmap2022)...");
     let onchain_revocation_manager = Arc::new(OnChainRevocationManager::new(issuer_did));
 
@@ -77,7 +88,16 @@ async fn main() -> Result<()> {
         Arc::clone(&did_manager),
         Arc::clone(&onchain_revocation_manager),
         config.credential.clone(),
+        Some(storage_path.clone()),
     ).await?;
+    
+    // Check if issuer was loaded from storage
+    let current_issuer = credential_issuer.issuer_did();
+    if current_issuer != "did:iota:issuer" && !current_issuer.ends_with(":issuer") {
+        info!(issuer_did = %current_issuer, "Issuer identity loaded from storage - ready to issue credentials");
+    } else {
+        info!("No existing issuer identity found. Call POST /api/v1/issuer/initialize to create one.");
+    }
 
     // Create application state (using Arc for non-Clone types)
     let state = Arc::new(AppState {
@@ -100,6 +120,7 @@ async fn main() -> Result<()> {
     
     info!("Server running at http://{}", bind_addr);
     info!("API documentation:");
+    info!("  POST /api/v1/issuer/initialize - Initialize issuer DID (required first!)");
     info!("  POST /api/v1/device/register - Register a new device");
     info!("  GET  /api/v1/did/resolve/:did - Resolve a DID");
     info!("  POST /api/v1/credential/verify - Verify a credential");

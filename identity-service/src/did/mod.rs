@@ -29,7 +29,8 @@ use identity_iota::storage::{
 
 // Verification and signing
 use identity_iota::verification::jws::JwsAlgorithm;
-use identity_iota::verification::MethodScope;
+use identity_iota::verification::{MethodScope, VerificationMethod};
+use identity_iota::verification::jwk::Jwk;
 
 // IOTA Rebased clients
 use identity_iota::iota::rebased::client::{IdentityClient, IdentityClientReadOnly};
@@ -68,7 +69,7 @@ pub struct DIDControlInfo {
     /// Key ID in the storage for the signing key
     pub key_id: KeyId,
     /// The public key JWK for creating signers
-    pub public_key_jwk: identity_iota::storage::JwkGenOutput,
+    pub public_key_jwk: Jwk,
     /// The fragment of the verification method
     pub fragment: String,
     /// Whether this DID has been deactivated
@@ -97,6 +98,17 @@ pub struct DIDManager {
     
     /// Identity Package ID
     package_id: String,
+}
+
+/// Result of creating an issuer DID, including the transaction key for persistence
+#[derive(Debug, Clone)]
+pub struct IssuerCreationResult {
+    /// The created DID string
+    pub did: String,
+    /// The transaction private key (hex encoded) for persisting control
+    pub tx_private_key_hex: String,
+    /// The verification method fragment
+    pub fragment: String,
 }
 
 impl DIDManager {
@@ -154,7 +166,7 @@ impl DIDManager {
         &self,
         control_info: &DIDControlInfo,
     ) -> IdentityResult<(IdentityClient<StorageSigner<'_, JwkMemStore, KeyIdMemstore>>, IotaAddress)> {
-        let public_key_jwk = control_info.public_key_jwk.jwk.to_public()
+        let public_key_jwk = control_info.public_key_jwk.to_public()
             .ok_or_else(|| IdentityError::DIDUpdateError(
                 "Failed to derive public key from stored JWK".into()
             ))?;
@@ -196,6 +208,9 @@ impl DIDManager {
     }
 
     /// Create a new DID for a device on IOTA Rebased
+    /// 
+    /// NOTE: For issuer DIDs, we need to use create_issuer_did_with_signing_key instead
+    /// to ensure the DID Document contains the CredentialIssuer's public key.
     pub async fn create_did(
         &self,
         public_key_hex: &str,
@@ -218,7 +233,7 @@ impl DIDManager {
             ));
         }
 
-        // Generate a new signing key for the transaction
+        // Generate a new signing key for the transaction (this is for signing the blockchain tx)
         let generate_result = self.storage
             .key_storage()
             .generate(KeyType::new("Ed25519"), JwsAlgorithm::EdDSA)
@@ -320,7 +335,7 @@ impl DIDManager {
             let control_info = DIDControlInfo {
                 did: did.clone(),
                 key_id: generate_result.key_id.clone(),
-                public_key_jwk: generate_result.clone(),
+                public_key_jwk: generate_result.jwk.clone(),
                 fragment: fragment.clone(),
                 deactivated: false,
             };
@@ -710,11 +725,309 @@ impl DIDManager {
         let guard = self.issuer_did.read();
         guard.as_ref().map(|d| d.to_string())
     }
+    
+    /// Set the issuer DID from a string (used when loading from storage)
+    pub fn set_issuer_did_from_string(&self, did_str: &str) -> IdentityResult<()> {
+        let iota_did = IotaDID::parse(did_str)
+            .map_err(|e| IdentityError::InvalidDID(e.to_string()))?;
+        
+        let mut guard = self.issuer_did.write();
+        *guard = Some(iota_did);
+        
+        info!(did = %did_str, "Issuer DID set from storage");
+        
+        Ok(())
+    }
+    
+    /// Restore control info for an issuer DID from stored transaction key
+    /// This allows the service to modify the DID after a restart
+    pub async fn restore_issuer_control_info(
+        &self,
+        did_str: &str,
+        tx_private_key_hex: &str,
+        fragment: &str,
+    ) -> IdentityResult<()> {
+        info!(did = %did_str, "Restoring control info for issuer DID from stored key");
+        
+        // Decode the transaction private key
+        let tx_key_bytes = hex::decode(tx_private_key_hex)
+            .map_err(|e| IdentityError::InvalidPublicKey(format!("Invalid tx key hex: {}", e)))?;
+        
+        if tx_key_bytes.len() != 32 {
+            return Err(IdentityError::InvalidPublicKey(
+                format!("Expected 32 bytes for Ed25519 private key, got {}", tx_key_bytes.len())
+            ));
+        }
+        
+        // Create the Ed25519 signing key from the stored bytes
+        let tx_key_array: [u8; 32] = tx_key_bytes.try_into()
+            .map_err(|_| IdentityError::InvalidPublicKey("Key must be 32 bytes".into()))?;
+        
+        // Import the key into storage using the JwkMemStore
+        // We need to create a JWK with both public and private parts
+        use base64::Engine;
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&tx_key_array);
+        let verifying_key = signing_key.verifying_key();
+        
+        // Create JWK with private key ('d' parameter)
+        let d_value = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&tx_key_array);
+        let x_value = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(verifying_key.as_bytes());
+        
+        let jwk_json = serde_json::json!({
+            "kty": "OKP",
+            "crv": "Ed25519",
+            "alg": "EdDSA",
+            "x": x_value,
+            "d": d_value
+        });
+        
+        let private_jwk: identity_iota::verification::jwk::Jwk = serde_json::from_value(jwk_json)
+            .map_err(|e| IdentityError::DIDCreationError(format!(
+                "Failed to create JWK from stored key: {}", e
+            )))?;
+        
+        // Insert the key into storage
+        let key_id = self.storage
+            .key_storage()
+            .insert(private_jwk.clone())
+            .await
+            .map_err(|e| IdentityError::DIDCreationError(format!(
+                "Failed to insert restored key into storage: {}", e
+            )))?;
+        
+        // Store control info for this DID
+        let control_info = DIDControlInfo {
+            did: did_str.to_string(),
+            key_id,
+            public_key_jwk: private_jwk, // Store the full JWK (includes private part)
+            fragment: fragment.to_string(),
+            deactivated: false,
+        };
+        
+        let mut control_map = self.did_control_info.write();
+        control_map.insert(did_str.to_string(), control_info);
+        
+        info!(did = %did_str, "Control info restored successfully");
+        
+        Ok(())
+    }
+    
+    /// Create issuer DID on-chain using a specific public key
+    /// This ensures the DID Document contains the same key used for signing credentials
+    /// Returns the DID and the transaction key needed to control it
+    pub async fn create_issuer_did_with_key(&self, public_key_hex: &str) -> IdentityResult<IssuerCreationResult> {
+        // Check if already initialized
+        {
+            let guard = self.issuer_did.read();
+            if let Some(ref did) = *guard {
+                // Already initialized - return without tx key (caller should have it)
+                return Ok(IssuerCreationResult {
+                    did: did.to_string(),
+                    tx_private_key_hex: String::new(), // Empty - already initialized
+                    fragment: "issuer-key-1".to_string(),
+                });
+            }
+        }
+
+        info!(public_key = %public_key_hex, "Creating issuer DID with CredentialIssuer's public key");
+        
+        // Validate the provided public key
+        let public_key_bytes = hex::decode(public_key_hex)
+            .map_err(|e| IdentityError::InvalidPublicKey(e.to_string()))?;
+
+        if public_key_bytes.len() != 32 {
+            return Err(IdentityError::InvalidPublicKey(
+                format!("Expected 32 bytes, got {}", public_key_bytes.len())
+            ));
+        }
+
+        // Generate a transaction signing key manually (so we have access to the private key)
+        // This is different from the credential signing key
+        use base64::Engine;
+        let tx_signing_key = ed25519_dalek::SigningKey::generate(&mut rand::thread_rng());
+        let tx_verifying_key = tx_signing_key.verifying_key();
+        
+        // Create JWK with private key ('d' parameter) and algorithm
+        let tx_private_bytes = tx_signing_key.to_bytes();
+        let d_value = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&tx_private_bytes);
+        let x_value = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(tx_verifying_key.as_bytes());
+        
+        let tx_jwk_json = serde_json::json!({
+            "kty": "OKP",
+            "crv": "Ed25519",
+            "alg": "EdDSA",
+            "x": x_value,
+            "d": d_value
+        });
+        
+        let tx_private_jwk: Jwk = serde_json::from_value(tx_jwk_json)
+            .map_err(|e| IdentityError::DIDCreationError(format!(
+                "Failed to create JWK: {}", e
+            )))?;
+        
+        // Store the private key hex for persistence
+        let tx_private_key_hex_for_storage = hex::encode(&tx_private_bytes);
+        
+        // Insert the key into storage
+        let tx_key_id = self.storage
+            .key_storage()
+            .insert(tx_private_jwk.clone())
+            .await
+            .map_err(|e| IdentityError::DIDCreationError(format!(
+                "Failed to insert transaction key into storage: {}", e
+            )))?;
+
+        let tx_public_key_jwk = tx_private_jwk.to_public()
+            .ok_or_else(|| IdentityError::DIDCreationError(
+                "Failed to derive public key from JWK".into()
+            ))?;
+
+        // Create StorageSigner for signing blockchain transactions
+        let signer = StorageSigner::new(
+            self.storage.as_ref(),
+            tx_key_id.clone(),
+            tx_public_key_jwk.clone(),
+        );
+
+        // Build IOTA client
+        let iota_client = IotaClientBuilder::default()
+            .build(&self.endpoint)
+            .await
+            .map_err(|e| IdentityError::DIDCreationError(format!(
+                "Failed to build IOTA client: {}", e
+            )))?;
+
+        let pkg_id = self.package_id.parse()
+            .map_err(|e| IdentityError::DIDCreationError(format!(
+                "Invalid package ID: {:?}", e
+            )))?;
+
+        let read_client = IdentityClientReadOnly::new_with_pkg_id(iota_client, pkg_id)
+            .await
+            .map_err(|e| IdentityError::DIDCreationError(format!(
+                "Failed to create read-only client: {}", e
+            )))?;
+
+        let identity_client = IdentityClient::new(read_client, signer)
+            .await
+            .map_err(|e| IdentityError::DIDCreationError(format!(
+                "Failed to create identity client: {}", e
+            )))?;
+
+        // Get sender address and request funds
+        let sender_address = identity_client.address();
+        
+        info!(sender_address = %sender_address, "Requesting funds from faucet for issuer DID");
+
+        if self.network.has_faucet() {
+            request_funds(&sender_address)
+                .await
+                .map_err(|e| IdentityError::FaucetError(format!(
+                    "Failed to request funds: {}", e
+                )))?;
+            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        }
+
+        // Create unpublished DID Document
+        let network_name = identity_client.network();
+        let mut unpublished_doc = IotaDocument::new(network_name);
+
+        // Create JWK from the provided public key (CredentialIssuer's key)
+        // This is the key that will be used to verify credential signatures
+        let issuer_jwk = create_ed25519_jwk_from_bytes(&public_key_bytes)?;
+        
+        // Insert the CredentialIssuer's public key as a verification method
+        let method = VerificationMethod::new_from_jwk(
+            unpublished_doc.id().clone(),
+            issuer_jwk,
+            Some("issuer-key-1"),
+        ).map_err(|e| IdentityError::DIDCreationError(format!(
+            "Failed to create verification method: {}", e
+        )))?;
+        
+        unpublished_doc.insert_method(method, MethodScope::VerificationMethod)
+            .map_err(|e| IdentityError::DIDCreationError(format!(
+                "Failed to insert verification method: {}", e
+            )))?;
+
+        // Publish DID Document to blockchain
+        info!("Publishing issuer DID Document to IOTA Rebased...");
+        
+        let published_doc = identity_client
+            .publish_did_document(unpublished_doc)
+            .with_gas_budget(GAS_BUDGET_PUBLISH_DID)
+            .build_and_execute(&identity_client)
+            .await
+            .map_err(|e| IdentityError::DIDCreationError(format!(
+                "Failed to publish issuer DID document: {}", e
+            )))?
+            .output;
+
+        let did_str = published_doc.id().to_string();
+
+        // Store control info for this DID
+        {
+            let control_info = DIDControlInfo {
+                did: did_str.clone(),
+                key_id: tx_key_id.clone(),
+                public_key_jwk: tx_private_jwk.clone(),
+                fragment: "issuer-key-1".to_string(),
+                deactivated: false,
+            };
+            let mut control_map = self.did_control_info.write();
+            control_map.insert(did_str.clone(), control_info);
+        }
+
+        // Set as issuer DID
+        let issuer_did = IotaDID::parse(&did_str)
+            .map_err(|e| IdentityError::InvalidDID(e.to_string()))?;
+
+        {
+            let mut guard = self.issuer_did.write();
+            *guard = Some(issuer_did.clone());
+        }
+
+        info!(did = %did_str, "Issuer DID created with CredentialIssuer's public key");
+
+        Ok(IssuerCreationResult {
+            did: did_str,
+            tx_private_key_hex: tx_private_key_hex_for_storage,
+            fragment: "issuer-key-1".to_string(),
+        })
+    }
 }
 
 // =============================================================================
 // HELPER FUNCTIONS
 // =============================================================================
+
+/// Extract the private key from a JWK (the 'd' parameter)
+/// Returns the private key as a hex string
+#[allow(dead_code)]
+fn extract_private_key_from_jwk(jwk: &identity_iota::verification::jwk::Jwk) -> IdentityResult<String> {
+    use base64::Engine;
+    
+    // Get the 'd' parameter which contains the private key
+    let d_param = jwk.try_okp_params()
+        .map_err(|e| IdentityError::DIDCreationError(format!(
+            "JWK is not an OKP key: {}", e
+        )))?
+        .d
+        .as_ref()
+        .ok_or_else(|| IdentityError::DIDCreationError(
+            "JWK does not contain private key ('d' parameter)".into()
+        ))?;
+    
+    // Decode from base64url
+    let private_key_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(d_param.as_bytes())
+        .map_err(|e| IdentityError::DIDCreationError(format!(
+            "Failed to decode private key from JWK: {}", e
+        )))?;
+    
+    // Return as hex
+    Ok(hex::encode(private_key_bytes))
+}
 
 /// Create a read-only identity client for resolving DIDs
 pub async fn create_read_only_client(endpoint: &str, package_id: &str) -> Result<IdentityClientReadOnly> {
@@ -736,6 +1049,38 @@ pub fn create_mem_storage() -> Storage<JwkMemStore, KeyIdMemstore> {
     Storage::new(JwkMemStore::new(), KeyIdMemstore::new())
 }
 
+/// Create an Ed25519 JWK from raw public key bytes
+/// 
+/// This is used to insert the CredentialIssuer's public key into a DID Document.
+fn create_ed25519_jwk_from_bytes(public_key_bytes: &[u8]) -> IdentityResult<Jwk> {
+    use base64::Engine;
+    
+    // Ensure we have exactly 32 bytes
+    if public_key_bytes.len() != 32 {
+        return Err(IdentityError::InvalidPublicKey(
+            format!("Expected 32 bytes for Ed25519 public key, got {}", public_key_bytes.len())
+        ));
+    }
+    
+    // Encode the public key as base64url (required for JWK 'x' parameter)
+    let x_value = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(public_key_bytes);
+    
+    // Create the JWK JSON
+    let jwk_json = serde_json::json!({
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "x": x_value
+    });
+    
+    // Parse into a Jwk struct
+    let jwk: Jwk = serde_json::from_value(jwk_json)
+        .map_err(|e| IdentityError::DIDCreationError(format!(
+            "Failed to create JWK from public key: {}", e
+        )))?;
+    
+    Ok(jwk)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -753,5 +1098,12 @@ mod tests {
     fn test_did_format() {
         let example_did = "did:iota:testnet:0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
         assert!(example_did.starts_with("did:iota:"));
+    }
+    
+    #[test]
+    fn test_create_ed25519_jwk() {
+        let test_bytes = [0u8; 32];
+        let jwk = create_ed25519_jwk_from_bytes(&test_bytes);
+        assert!(jwk.is_ok());
     }
 }

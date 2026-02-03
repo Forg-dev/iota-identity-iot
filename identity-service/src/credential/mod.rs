@@ -16,7 +16,7 @@
 use chrono::{Duration, Utc};
 use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use std::sync::Arc;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use shared::{
     config::CredentialConfig,
@@ -41,10 +41,29 @@ pub struct CredentialIssuer {
     signing_key: SigningKey,
     
     /// Issuer's DID (will be set after initialization)
-    issuer_did: String,
+    /// Uses RwLock to allow updating when issuer is initialized on-chain
+    issuer_did: std::sync::RwLock<String>,
     
     /// Configuration
     config: CredentialConfig,
+    
+    /// Path to store issuer identity (for persistence)
+    storage_path: Option<std::path::PathBuf>,
+}
+
+/// Issuer identity data for persistence
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct IssuerIdentity {
+    pub did: String,
+    pub signing_key_hex: String,
+    /// Transaction signing key for blockchain operations (separate from credential signing key)
+    /// This is the private key used to sign DID update transactions
+    #[serde(default)]
+    pub tx_key_hex: Option<String>,
+    /// The fragment of the verification method in the DID Document
+    #[serde(default)]
+    pub verification_method_fragment: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl CredentialIssuer {
@@ -54,10 +73,12 @@ impl CredentialIssuer {
     /// * `did_manager` - DID Manager for resolving DIDs
     /// * `revocation_manager` - On-chain revocation manager for RevocationBitmap2022
     /// * `config` - Credential configuration
+    /// * `storage_path` - Optional path to store/load issuer identity
     pub async fn new(
         did_manager: Arc<DIDManager>,
         revocation_manager: Arc<OnChainRevocationManager>,
         config: CredentialConfig,
+        storage_path: Option<std::path::PathBuf>,
     ) -> IdentityResult<Self> {
         info!(
             issuer_name = %config.issuer_name,
@@ -65,12 +86,59 @@ impl CredentialIssuer {
             "Initializing Credential Issuer with RevocationBitmap2022"
         );
 
-        // Generate a new signing key for the issuer
-        let signing_key = SigningKey::generate(&mut rand::thread_rng());
+        // Try to load existing issuer identity from storage
+        let (signing_key, issuer_did) = if let Some(ref path) = storage_path {
+            if let Some(identity) = Self::load_issuer_identity(path)? {
+                info!(did = %identity.did, "Loaded existing issuer identity from storage");
+                
+                // Decode the signing key
+                let key_bytes = hex::decode(&identity.signing_key_hex)
+                    .map_err(|e| IdentityError::InvalidCredential(format!("Invalid key hex: {}", e)))?;
+                let key_array: [u8; 32] = key_bytes.try_into()
+                    .map_err(|_| IdentityError::InvalidCredential("Key must be 32 bytes".into()))?;
+                let signing_key = SigningKey::from_bytes(&key_array);
+                
+                // Update DID manager with the loaded issuer DID
+                did_manager.set_issuer_did_from_string(&identity.did)?;
+                
+                // Update revocation manager with the loaded issuer DID
+                revocation_manager.set_issuer_did(identity.did.clone());
+                
+                // If we have a stored transaction key, restore the control info
+                // This allows the service to modify the DID after a restart
+                if let (Some(tx_key_hex), Some(fragment)) = (&identity.tx_key_hex, &identity.verification_method_fragment) {
+                    info!(did = %identity.did, "Restoring DID control info from stored transaction key");
+                    if let Err(e) = did_manager.restore_issuer_control_info(
+                        &identity.did,
+                        tx_key_hex,
+                        fragment,
+                    ).await {
+                        warn!("Failed to restore control info: {}. DID updates will not be possible.", e);
+                    } else {
+                        info!(did = %identity.did, "DID control info restored successfully");
+                    }
+                } else {
+                    warn!(
+                        did = %identity.did,
+                        "No transaction key stored - DID updates will not be possible after restart. \
+                         Re-initialize the issuer to fix this."
+                    );
+                }
+                
+                (signing_key, identity.did)
+            } else {
+                // No existing identity, generate new key
+                info!("No existing issuer identity found, generating new signing key");
+                let signing_key = SigningKey::generate(&mut rand::thread_rng());
+                (signing_key, "did:iota:issuer".to_string())
+            }
+        } else {
+            // No storage path, generate new key
+            let signing_key = SigningKey::generate(&mut rand::thread_rng());
+            (signing_key, "did:iota:issuer".to_string())
+        };
 
-        // For now, use a placeholder DID
-        // In production, this would come from did_manager.get_or_create_issuer_did()
-        let issuer_did = "did:iota:issuer".to_string();
+        let issuer_did = std::sync::RwLock::new(issuer_did);
 
         Ok(Self {
             did_manager,
@@ -78,7 +146,69 @@ impl CredentialIssuer {
             signing_key,
             issuer_did,
             config,
+            storage_path,
         })
+    }
+    
+    /// Load issuer identity from storage
+    fn load_issuer_identity(path: &std::path::Path) -> IdentityResult<Option<IssuerIdentity>> {
+        let identity_file = path.join("issuer_identity.json");
+        if !identity_file.exists() {
+            return Ok(None);
+        }
+        
+        let content = std::fs::read_to_string(&identity_file)
+            .map_err(|e| IdentityError::StorageIOError(format!("Failed to read issuer identity: {}", e)))?;
+        
+        let identity: IssuerIdentity = serde_json::from_str(&content)
+            .map_err(|e| IdentityError::StorageIOError(format!("Failed to parse issuer identity: {}", e)))?;
+        
+        Ok(Some(identity))
+    }
+    
+    /// Save issuer identity to storage (without tx key - deprecated)
+    pub fn save_issuer_identity(&self, did: &str) -> IdentityResult<()> {
+        self.save_issuer_identity_with_tx_key(did, "", "")
+    }
+    
+    /// Save issuer identity to storage with transaction key for DID control persistence
+    pub fn save_issuer_identity_with_tx_key(
+        &self, 
+        did: &str, 
+        tx_key_hex: &str,
+        fragment: &str,
+    ) -> IdentityResult<()> {
+        let Some(ref path) = self.storage_path else {
+            return Ok(()); // No storage path configured
+        };
+        
+        // Create directory if it doesn't exist
+        std::fs::create_dir_all(path)
+            .map_err(|e| IdentityError::StorageIOError(format!("Failed to create storage directory: {}", e)))?;
+        
+        let identity = IssuerIdentity {
+            did: did.to_string(),
+            signing_key_hex: hex::encode(self.signing_key.to_bytes()),
+            tx_key_hex: if tx_key_hex.is_empty() { None } else { Some(tx_key_hex.to_string()) },
+            verification_method_fragment: if fragment.is_empty() { None } else { Some(fragment.to_string()) },
+            created_at: chrono::Utc::now(),
+        };
+        
+        let identity_file = path.join("issuer_identity.json");
+        let content = serde_json::to_string_pretty(&identity)
+            .map_err(|e| IdentityError::StorageIOError(format!("Failed to serialize issuer identity: {}", e)))?;
+        
+        std::fs::write(&identity_file, content)
+            .map_err(|e| IdentityError::StorageIOError(format!("Failed to write issuer identity: {}", e)))?;
+        
+        info!(path = ?identity_file, has_tx_key = !tx_key_hex.is_empty(), "Saved issuer identity to storage");
+        
+        Ok(())
+    }
+    
+    /// Get the issuer's public key as hex string (for creating DID on-chain)
+    pub fn public_key_hex(&self) -> String {
+        hex::encode(self.signing_key.verifying_key().as_bytes())
     }
 
     /// Issue a Verifiable Credential for a device
@@ -98,9 +228,13 @@ impl CredentialIssuer {
         capabilities: Vec<String>,
         metadata: Option<CredentialMetadata>,
     ) -> IdentityResult<DeviceCredential> {
+        // Get the current issuer DID - prefer the one from DID manager if initialized
+        let current_issuer_did = self.get_current_issuer_did();
+        
         info!(
             subject_did = %subject_did,
             device_type = ?device_type,
+            issuer_did = %current_issuer_did,
             "Issuing credential for device with RevocationBitmap2022"
         );
 
@@ -143,7 +277,7 @@ impl CredentialIssuer {
                 "VerifiableCredential".to_string(),
                 CREDENTIAL_TYPE_IOT_DEVICE.to_string(),
             ],
-            issuer: self.issuer_did.clone(),
+            issuer: current_issuer_did.clone(),
             issuance_date: now,
             expiration_date: expiration,
             credential_subject: subject,
@@ -152,7 +286,7 @@ impl CredentialIssuer {
         };
 
         // Sign the credential
-        let proof = self.create_proof(&credential)?;
+        let proof = self.create_proof(&credential, &current_issuer_did)?;
         credential.proof = Some(proof);
 
         info!(
@@ -165,7 +299,7 @@ impl CredentialIssuer {
     }
 
     /// Create a proof (signature) for a credential
-    fn create_proof(&self, credential: &DeviceCredential) -> IdentityResult<CredentialProof> {
+    fn create_proof(&self, credential: &DeviceCredential, issuer_did: &str) -> IdentityResult<CredentialProof> {
         // Serialize credential without proof for signing
         let credential_without_proof = DeviceCredential {
             proof: None,
@@ -185,7 +319,7 @@ impl CredentialIssuer {
         Ok(CredentialProof {
             proof_type: "Ed25519Signature2020".to_string(),
             created: Utc::now(),
-            verification_method: format!("{}#key-1", self.issuer_did),
+            verification_method: format!("{}#key-1", issuer_did),
             proof_purpose: "assertionMethod".to_string(),
             proof_value: signature_base64,
         })
@@ -237,9 +371,11 @@ impl CredentialIssuer {
             .ok_or_else(|| IdentityError::InvalidCredential("Missing proof".into()))?;
 
         // Resolve the issuer's DID to get the public key
-        // In production, this would query the blockchain
-        // For now, we'll use our own public key if it's our credential
-        let issuer_public_key = if credential.issuer == self.issuer_did {
+        // For credentials issued by us, use our own public key
+        let current_issuer_did = self.get_current_issuer_did();
+        let issuer_public_key = if credential.issuer == current_issuer_did 
+            || credential.issuer == "did:iota:issuer" {
+            // It's our credential (either with real DID or placeholder)
             self.signing_key.verifying_key()
         } else {
             // Would resolve from blockchain
@@ -298,6 +434,9 @@ impl CredentialIssuer {
         capabilities: Vec<String>,
         metadata: Option<CredentialMetadata>,
     ) -> IdentityResult<String> {
+        // Get the current issuer DID
+        let current_issuer_did = self.get_current_issuer_did();
+        
         // Issue the credential
         let credential = self.issue_credential(
             subject_did,
@@ -316,7 +455,7 @@ impl CredentialIssuer {
         // Payload (the credential)
         let payload = serde_json::json!({
             "vc": credential,
-            "iss": self.issuer_did,
+            "iss": current_issuer_did,
             "sub": subject_did,
             "iat": credential.issuance_date.timestamp(),
             "exp": credential.expiration_date.timestamp()
@@ -343,9 +482,26 @@ impl CredentialIssuer {
         Ok(format!("{}.{}.{}", header_b64, payload_b64, signature_b64))
     }
 
-    /// Get the issuer's DID
-    pub fn issuer_did(&self) -> &str {
-        &self.issuer_did
+    /// Get the current issuer DID, preferring the one from DID manager if initialized
+    fn get_current_issuer_did(&self) -> String {
+        // First check if DID manager has an initialized issuer DID
+        if let Some(did_from_manager) = self.did_manager.get_issuer_did_string() {
+            return did_from_manager;
+        }
+        
+        // Fall back to the stored value
+        self.issuer_did.read().unwrap().clone()
+    }
+
+    /// Update the issuer DID (called when issuer is initialized on-chain)
+    pub fn set_issuer_did(&self, new_did: String) {
+        let mut guard = self.issuer_did.write().unwrap();
+        *guard = new_did;
+    }
+
+    /// Get the issuer's DID (current value)
+    pub fn issuer_did(&self) -> String {
+        self.get_current_issuer_did()
     }
 
     /// Get the issuer's public key

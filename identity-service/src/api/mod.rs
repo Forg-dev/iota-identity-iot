@@ -577,11 +577,19 @@ async fn initialize_issuer_did(
         }
     }
     
-    // Create issuer DID on-chain
-    match state.did_manager.get_or_create_issuer_did().await {
-        Ok(issuer_did) => {
-            let did_str = issuer_did.to_string();
+    // Get the public key from the CredentialIssuer - this ensures the DID Document
+    // will contain the same key used for signing credentials
+    let public_key_hex = state.credential_issuer.public_key_hex();
+    info!(public_key = %public_key_hex, "Using CredentialIssuer's public key for issuer DID");
+    
+    // Create issuer DID on-chain with the CredentialIssuer's public key
+    match state.did_manager.create_issuer_did_with_key(&public_key_hex).await {
+        Ok(creation_result) => {
+            let did_str = creation_result.did.clone();
             info!(issuer_did = %did_str, "Issuer DID created on-chain");
+            
+            // Update the credential issuer with the new DID
+            state.credential_issuer.set_issuer_did(did_str.clone());
             
             // Update the revocation manager with the real issuer DID
             state.onchain_revocation_manager.set_issuer_did(did_str.clone());
@@ -602,6 +610,16 @@ async fn initialize_issuer_did(
                         "RevocationBitmap2022 service added to issuer DID"
                     );
                     
+                    // Save issuer identity to storage for persistence (including tx key)
+                    if let Err(e) = state.credential_issuer.save_issuer_identity_with_tx_key(
+                        &did_str,
+                        &creation_result.tx_private_key_hex,
+                        &creation_result.fragment,
+                    ) {
+                        error!("Failed to save issuer identity: {}", e);
+                        // Continue anyway - the issuer is still functional
+                    }
+                    
                     Ok(Json(serde_json::json!({
                         "success": true,
                         "issuer_did": did_str,
@@ -612,7 +630,15 @@ async fn initialize_issuer_did(
                 }
                 Err(e) => {
                     error!("Failed to add revocation service: {}", e);
-                    // DID was created but service not added
+                    // DID was created but service not added - still save identity
+                    if let Err(save_err) = state.credential_issuer.save_issuer_identity_with_tx_key(
+                        &did_str,
+                        &creation_result.tx_private_key_hex,
+                        &creation_result.fragment,
+                    ) {
+                        error!("Failed to save issuer identity: {}", save_err);
+                    }
+                    
                     Ok(Json(serde_json::json!({
                         "success": true,
                         "issuer_did": did_str,
@@ -817,26 +843,30 @@ async fn rotate_key(
 /// Convert IotaDocument to SimplifiedDIDDocument
 fn convert_to_simplified(doc: &identity_iota::iota::IotaDocument) -> SimplifiedDIDDocument {
     use shared::types::VerificationMethod;
+    use base64::Engine;
     
     // Extract verification methods from the document
     let verification_methods: Vec<VerificationMethod> = doc
         .methods(None)
         .into_iter()
         .map(|method| {
-            // Get the public key in multibase format
+            // Get the public key - try JWK first (the method available in identity_iota)
             let public_key_multibase = method
                 .data()
                 .try_public_key_jwk()
-                .map(|jwk| {
-                    // Convert JWK to multibase (simplified - use x value for Ed25519)
+                .ok()
+                .and_then(|jwk| {
                     jwk.try_okp_params()
-                        .map(|params| format!("z{}", base64::Engine::encode(
-                            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-                            &params.x
-                        )))
-                        .unwrap_or_else(|_| "unknown".to_string())
+                        .ok()
+                        .and_then(|params| {
+                            // 'x' is base64url encoded, decode and re-encode as base58
+                            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                                .decode(&params.x)
+                                .ok()
+                                .map(|bytes| format!("z{}", bs58::encode(&bytes).into_string()))
+                        })
                 })
-                .unwrap_or_else(|_| "unknown".to_string());
+                .unwrap_or_else(|| "unknown".to_string());
             
             VerificationMethod {
                 id: method.id().to_string(),

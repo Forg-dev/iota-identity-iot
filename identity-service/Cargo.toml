@@ -47,6 +47,7 @@ ed25519-dalek.workspace = true
 rand.workspace = true
 hex.workspace = true
 base64.workspace = true
+bs58 = "0.5"
 
 # Error handling & logging
 anyhow.workspace = true
@@ -61,6 +62,7 @@ url.workspace = true
 reqwest.workspace = true
 parking_lot.workspace = true
 urlencoding.workspace = true
+dirs = "5.0"
 
 [dev-dependencies]
 tokio-test.workspace = true

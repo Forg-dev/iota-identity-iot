@@ -44,7 +44,8 @@ impl IotaNetwork {
         match self {
             IotaNetwork::Testnet => Some(IOTA_FAUCET_TESTNET),
             IotaNetwork::Devnet => Some(IOTA_FAUCET_DEVNET),
-            _ => None,
+            IotaNetwork::Local => Some(IOTA_FAUCET_LOCAL),
+            IotaNetwork::Mainnet => None,
         }
     }
 
@@ -60,7 +61,7 @@ impl IotaNetwork {
 
     /// Check if this network has a faucet
     pub fn has_faucet(&self) -> bool {
-        matches!(self, IotaNetwork::Testnet | IotaNetwork::Devnet)
+        matches!(self, IotaNetwork::Testnet | IotaNetwork::Devnet | IotaNetwork::Local)
     }
 
     /// Parse network from string
@@ -69,7 +70,7 @@ impl IotaNetwork {
             "testnet" => IotaNetwork::Testnet,
             "devnet" => IotaNetwork::Devnet,
             "mainnet" => IotaNetwork::Mainnet,
-            "local" | "localhost" => IotaNetwork::Local,
+            "local" | "localnet" | "localhost" => IotaNetwork::Local,
             _ => IotaNetwork::Testnet,
         }
     }
@@ -302,18 +303,12 @@ impl Default for StorageConfig {
 impl StorageConfig {
     /// Validate storage configuration
     pub fn validate(&self) -> IdentityResult<()> {
-        if self.stronghold_password.is_none() {
-            // Check environment variable
-            if env::var(ENV_STRONGHOLD_PASSWORD).is_err() {
-                return Err(IdentityError::ConfigurationError(
-                    "Stronghold password not set. Set STRONGHOLD_PASSWORD env var.".into(),
-                ));
-            }
-        }
+        // Note: Stronghold password is currently not used since we use in-memory storage.
+        // This validation is kept for future Stronghold integration but is not enforced.
         Ok(())
     }
 
-    /// Get the Stronghold password
+    /// Get the Stronghold password (if set)
     pub fn get_password(&self) -> IdentityResult<String> {
         if let Some(ref password) = self.stronghold_password {
             return Ok(password.clone());
