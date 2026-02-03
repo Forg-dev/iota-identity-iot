@@ -87,6 +87,12 @@ pub struct DIDManager {
     /// Issuer's DID (this service's identity)
     issuer_did: RwLock<Option<IotaDID>>,
     
+    /// Issuer's transaction key ID (for paying gas on device DIDs)
+    issuer_tx_key_id: RwLock<Option<KeyId>>,
+    
+    /// Issuer's transaction public key JWK (for creating signers)
+    issuer_tx_public_jwk: RwLock<Option<Jwk>>,
+    
     /// Control info for DIDs we can manage
     did_control_info: RwLock<HashMap<String, DIDControlInfo>>,
     
@@ -144,6 +150,8 @@ impl DIDManager {
             read_only_client,
             storage: Arc::new(storage),
             issuer_did: RwLock::new(None),
+            issuer_tx_key_id: RwLock::new(None),
+            issuer_tx_public_jwk: RwLock::new(None),
             did_control_info: RwLock::new(HashMap::new()),
             network: config.network,
             endpoint,
@@ -159,6 +167,44 @@ impl DIDManager {
         let key_id_store = KeyIdMemstore::new();
 
         Ok(Storage::new(jwk_store, key_id_store))
+    }
+
+    /// Check wallet balance via JSON-RPC call
+    /// Returns balance in NANOS (1 IOTA = 1_000_000_000 NANOS)
+    async fn check_balance(endpoint: &str, address: &IotaAddress) -> u64 {
+        // Build JSON-RPC URL (convert WS endpoint to HTTP if needed)
+        let http_endpoint = endpoint
+            .replace("wss://", "https://")
+            .replace("ws://", "http://");
+        
+        let client = reqwest::Client::new();
+        let request_body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "iotax_getBalance",
+            "params": [address.to_string()]
+        });
+        
+        match client.post(&http_endpoint)
+            .json(&request_body)
+            .send()
+            .await
+        {
+            Ok(response) => {
+                if let Ok(json) = response.json::<serde_json::Value>().await {
+                    // Parse the totalBalance from response
+                    // Response format: {"result": {"totalBalance": "80000000000"}}
+                    if let Some(balance_str) = json["result"]["totalBalance"].as_str() {
+                        return balance_str.parse().unwrap_or(0);
+                    }
+                }
+                0
+            }
+            Err(e) => {
+                warn!("Failed to check balance: {}", e);
+                0
+            }
+        }
     }
 
     /// Helper to create an IdentityClient from stored control info
@@ -209,6 +255,9 @@ impl DIDManager {
 
     /// Create a new DID for a device on IOTA Rebased
     /// 
+    /// Uses the issuer's transaction key to pay for gas (if available).
+    /// This allows creating multiple device DIDs using the pre-funded issuer wallet.
+    /// 
     /// NOTE: For issuer DIDs, we need to use create_issuer_did_with_signing_key instead
     /// to ensure the DID Document contains the CredentialIssuer's public key.
     pub async fn create_did(
@@ -233,24 +282,46 @@ impl DIDManager {
             ));
         }
 
-        // Generate a new signing key for the transaction (this is for signing the blockchain tx)
-        let generate_result = self.storage
-            .key_storage()
-            .generate(KeyType::new("Ed25519"), JwsAlgorithm::EdDSA)
-            .await
-            .map_err(|e| IdentityError::DIDCreationError(format!(
-                "Failed to generate signing key: {}", e
-            )))?;
+        // Try to use issuer's transaction key for gas payment (if available)
+        // IMPORTANT: We must release locks before any .await to keep Future Send
+        let existing_issuer_key: Option<(KeyId, Jwk)> = {
+            let issuer_key_id = self.issuer_tx_key_id.read();
+            let issuer_jwk = self.issuer_tx_public_jwk.read();
+            
+            match (issuer_key_id.as_ref(), issuer_jwk.as_ref()) {
+                (Some(kid), Some(jwk)) => Some((kid.clone(), jwk.clone())),
+                _ => None,
+            }
+            // Locks are released here at end of block
+        };
+        
+        let (key_id, public_key_jwk) = if let Some((kid, jwk)) = existing_issuer_key {
+            info!("Using issuer's transaction key for gas payment");
+            (kid, jwk)
+        } else {
+            // No issuer key available, generate a new one (will need faucet)
+            // This .await is now safe because locks were released above
+            info!("No issuer key available, generating new transaction key");
+            let generate_result = self.storage
+                .key_storage()
+                .generate(KeyType::new("Ed25519"), JwsAlgorithm::EdDSA)
+                .await
+                .map_err(|e| IdentityError::DIDCreationError(format!(
+                    "Failed to generate signing key: {}", e
+                )))?;
 
-        let public_key_jwk = generate_result.jwk.to_public()
-            .ok_or_else(|| IdentityError::DIDCreationError(
-                "Failed to derive public key from JWK".into()
-            ))?;
+            let pub_jwk = generate_result.jwk.to_public()
+                .ok_or_else(|| IdentityError::DIDCreationError(
+                    "Failed to derive public key from JWK".into()
+                ))?;
+                
+            (generate_result.key_id, pub_jwk)
+        };
 
         // Create StorageSigner for signing transactions
         let signer = StorageSigner::new(
             self.storage.as_ref(),
-            generate_result.key_id.clone(),
+            key_id.clone(),
             public_key_jwk.clone(),
         );
 
@@ -282,25 +353,51 @@ impl DIDManager {
         // Get sender address from the identity client
         let sender_address = identity_client.address();
         
-        info!(sender_address = %sender_address, "Requesting funds from faucet");
+        // Check balance before requesting funds
+        // Minimum balance required: 0.1 IOTA (100_000_000 NANOS)
+        const MIN_BALANCE_NANOS: u64 = 100_000_000;
+        
+        let current_balance = Self::check_balance(&self.endpoint, &sender_address).await;
+        
+        info!(
+            sender_address = %sender_address, 
+            balance_nanos = current_balance,
+            balance_iota = current_balance as f64 / 1_000_000_000.0,
+            "Checking wallet balance"
+        );
 
-        // Request funds from faucet (testnet/devnet only)
-        if self.network.has_faucet() {
+        // Request funds from faucet only if balance is too low (testnet/devnet only)
+        if self.network.has_faucet() && current_balance < MIN_BALANCE_NANOS {
+            info!("Balance too low, requesting funds from faucet");
             request_funds(&sender_address)
                 .await
                 .map_err(|e| IdentityError::FaucetError(format!(
                     "Failed to request funds: {}", e
                 )))?;
 
-            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
             debug!("Funds received from faucet");
+        } else if current_balance >= MIN_BALANCE_NANOS {
+            debug!(
+                balance_iota = current_balance as f64 / 1_000_000_000.0,
+                "Sufficient balance, skipping faucet request"
+            );
         }
 
         // Create unpublished DID Document
         let network_name = identity_client.network();
         let mut unpublished_doc = IotaDocument::new(network_name);
 
-        // Generate and add verification method
+        // Generate and add verification method for the DID document itself
+        // (this is separate from the transaction signing key)
+        let doc_key_result = self.storage
+            .key_storage()
+            .generate(KeyType::new("Ed25519"), JwsAlgorithm::EdDSA)
+            .await
+            .map_err(|e| IdentityError::DIDCreationError(format!(
+                "Failed to generate document key: {}", e
+            )))?;
+            
         let fragment = unpublished_doc
             .generate_method(
                 self.storage.as_ref(),
@@ -330,12 +427,12 @@ impl DIDManager {
         let did = published_doc.id().to_string();
         let object_id = published_doc.id().tag_str().to_string();
 
-        // Store control info for this DID
+        // Store control info for this DID (using the document key, not tx key)
         {
             let control_info = DIDControlInfo {
                 did: did.clone(),
-                key_id: generate_result.key_id.clone(),
-                public_key_jwk: generate_result.jwk.clone(),
+                key_id: doc_key_result.key_id.clone(),
+                public_key_jwk: doc_key_result.jwk.clone(),
                 fragment: fragment.clone(),
                 deactivated: false,
             };
@@ -795,6 +892,22 @@ impl DIDManager {
                 "Failed to insert restored key into storage: {}", e
             )))?;
         
+        // Get public JWK for signer creation
+        let public_jwk = private_jwk.to_public()
+            .ok_or_else(|| IdentityError::DIDCreationError(
+                "Failed to derive public JWK".into()
+            ))?;
+        
+        // Store issuer's tx key info for use in device DID creation
+        {
+            let mut issuer_key_id = self.issuer_tx_key_id.write();
+            *issuer_key_id = Some(key_id.clone());
+        }
+        {
+            let mut issuer_jwk = self.issuer_tx_public_jwk.write();
+            *issuer_jwk = Some(public_jwk);
+        }
+        
         // Store control info for this DID
         let control_info = DIDControlInfo {
             did: did_str.to_string(),
@@ -807,7 +920,7 @@ impl DIDManager {
         let mut control_map = self.did_control_info.write();
         control_map.insert(did_str.to_string(), control_info);
         
-        info!(did = %did_str, "Control info restored successfully");
+        info!(did = %did_str, "Control info restored successfully (tx key available for device DIDs)");
         
         Ok(())
     }
@@ -976,6 +1089,16 @@ impl DIDManager {
             };
             let mut control_map = self.did_control_info.write();
             control_map.insert(did_str.clone(), control_info);
+        }
+        
+        // Store issuer's tx key info for use in device DID creation
+        {
+            let mut issuer_key_id = self.issuer_tx_key_id.write();
+            *issuer_key_id = Some(tx_key_id.clone());
+        }
+        {
+            let mut issuer_jwk = self.issuer_tx_public_jwk.write();
+            *issuer_jwk = Some(tx_public_key_jwk.clone());
         }
 
         // Set as issuer DID

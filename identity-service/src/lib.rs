@@ -47,3 +47,11 @@ pub struct AppState {
     /// On-chain Revocation Manager using RevocationBitmap2022
     pub onchain_revocation_manager: std::sync::Arc<revocation::OnChainRevocationManager>,
 }
+
+// Debug: Check if types are Send + Sync
+fn _assert_send_sync<T: Send + Sync>() {}
+fn _check_types() {
+    _assert_send_sync::<credential::CredentialIssuer>();
+    _assert_send_sync::<did::DIDManager>();
+    _assert_send_sync::<cache::CacheManager>();
+}

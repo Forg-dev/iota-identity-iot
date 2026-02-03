@@ -26,7 +26,8 @@ async-trait.workspace = true
 futures.workspace = true
 
 # Web framework
-axum.workspace = true
+# NOTA: identity_iota porta axum 0.8.x via tonic. Dobbiamo usare la stessa versione.
+axum = "=0.8.8"
 tower.workspace = true
 tower-http.workspace = true
 hyper.workspace = true
@@ -67,3 +68,4 @@ dirs = "5.0"
 [dev-dependencies]
 tokio-test.workspace = true
 tempfile.workspace = true
+

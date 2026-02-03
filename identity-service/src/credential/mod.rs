@@ -42,7 +42,7 @@ pub struct CredentialIssuer {
     
     /// Issuer's DID (will be set after initialization)
     /// Uses RwLock to allow updating when issuer is initialized on-chain
-    issuer_did: std::sync::RwLock<String>,
+    issuer_did: parking_lot::RwLock<String>,
     
     /// Configuration
     config: CredentialConfig,
@@ -138,7 +138,7 @@ impl CredentialIssuer {
             (signing_key, "did:iota:issuer".to_string())
         };
 
-        let issuer_did = std::sync::RwLock::new(issuer_did);
+        let issuer_did = parking_lot::RwLock::new(issuer_did);
 
         Ok(Self {
             did_manager,
@@ -490,12 +490,12 @@ impl CredentialIssuer {
         }
         
         // Fall back to the stored value
-        self.issuer_did.read().unwrap().clone()
+        self.issuer_did.read().clone()
     }
 
     /// Update the issuer DID (called when issuer is initialized on-chain)
     pub fn set_issuer_did(&self, new_did: String) {
-        let mut guard = self.issuer_did.write().unwrap();
+        let mut guard = self.issuer_did.write();
         *guard = new_did;
     }
 

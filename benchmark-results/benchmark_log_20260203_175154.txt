@@ -1,0 +1,251 @@
+    Finished `release` profile [optimized] target(s) in 0.34s
+     Running `target/release/benchmark --all --iterations 10 --identity-service 'http://localhost:8080' --output /home/forg/iota-identity-iot/benchmark-results/benchmark_results_20260203_175154.csv`
+╔════════════════════════════════════════════════════════════╗
+║       IOTA Identity IoT - Benchmark Suite                  ║
+╚════════════════════════════════════════════════════════════╝
+
+Configuration:
+  Identity Service: http://localhost:8080
+  Iterations: 10
+  Warm-up: enabled
+
+[2m2026-02-03T16:53:31.594563Z[0m [32m INFO[0m [2mbenchmark[0m[2m:[0m Identity Service is healthy
+
+>>> Running all benchmarks...
+
+
+Benchmark: DID Resolution (Cached)
+  This measures the time to resolve a DID from cache.
+  Expected: <1ms
+
+============================================================
+Benchmark: DID Resolution (Cached)
+============================================================
+Iterations: 10
+
+  Min:            0.10 ms
+  Max:            0.24 ms
+  Mean:           0.13 ms
+  Median:         0.10 ms
+  P95:            0.24 ms
+  P99:            0.24 ms
+  Std Dev:        0.05 ms
+============================================================
+
+Benchmark: Credential Issuance (via Device Registration)
+  This measures the time to register a device and issue a credential.
+  Note: This includes DID creation, so timing reflects full registration.
+  The credential issuance itself is <5ms but is bundled with DID creation.
+
+============================================================
+Benchmark: Credential Issuance
+============================================================
+Iterations: 10
+
+  Min:          859.65 ms
+  Max:         1675.26 ms
+  Mean:        1069.26 ms
+  Median:       940.03 ms
+  P95:         1675.26 ms
+  P99:         1675.26 ms
+  Std Dev:      251.19 ms
+============================================================
+
+Benchmark: Credential Verification
+  This measures the time to verify a credential.
+  Expected: <5ms (with cached issuer DID)
+
+============================================================
+Benchmark: Credential Verification
+============================================================
+Iterations: 10
+
+  Min:            0.16 ms
+  Max:            0.38 ms
+  Mean:           0.24 ms
+  Median:         0.21 ms
+  P95:            0.38 ms
+  P99:            0.38 ms
+  Std Dev:        0.07 ms
+============================================================
+
+Benchmark: Revocation Check
+  This measures the time to check if a credential is revoked.
+  Expected: <1ms (bitmap lookup)
+
+============================================================
+Benchmark: Revocation Check
+============================================================
+Iterations: 10
+
+  Min:            0.09 ms
+  Max:            0.18 ms
+  Mean:           0.13 ms
+  Median:         0.14 ms
+  P95:            0.18 ms
+  P99:            0.18 ms
+  Std Dev:        0.03 ms
+============================================================
+
+>>> Running slow benchmarks (fewer iterations)...
+
+
+Benchmark: DID Resolution (Cold Cache)
+  This measures the time to resolve a DID with empty cache.
+  Expected: ~150-200ms (blockchain query)
+
+============================================================
+Benchmark: DID Resolution (Cold)
+============================================================
+Iterations: 3
+
+  Min:           37.25 ms
+  Max:          149.12 ms
+  Mean:          74.85 ms
+  Median:        38.24 ms
+  P95:          149.12 ms
+  P99:          149.12 ms
+  Std Dev:       52.47 ms
+============================================================
+
+Benchmark: DID Creation (via Device Registration)
+  This measures the time to create a new DID on the blockchain.
+  Expected: ~7 seconds (includes blockchain transaction)
+
+============================================================
+Benchmark: DID Creation
+============================================================
+Iterations: 3
+
+  Min:          902.66 ms
+  Max:         1214.46 ms
+  Mean:        1010.52 ms
+  Median:       914.94 ms
+  P95:         1214.46 ms
+  P99:         1214.46 ms
+  Std Dev:      143.93 ms
+============================================================
+
+Benchmark: Full Device Registration
+  This measures the complete registration flow (DID + Credential).
+  Expected: ~7 seconds (dominated by blockchain transaction)
+
+============================================================
+Benchmark: Device Registration
+============================================================
+Iterations: 3
+
+  Min:          924.16 ms
+  Max:          943.62 ms
+  Mean:         934.14 ms
+  Median:       934.91 ms
+  P95:          943.62 ms
+  P99:          943.62 ms
+  Std Dev:        7.74 ms
+============================================================
+
+
+╔════════════════════════════════════════════════════════════╗
+║                      SUMMARY                               ║
+╚════════════════════════════════════════════════════════════╝
+
+Benchmark                            Mean        P95        P99
+--------------------------------------------------------------
+DID Resolution (Cached)             0.13ms      0.24ms      0.24ms
+Credential Issuance              1069.26ms   1675.26ms   1675.26ms
+Credential Verification             0.24ms      0.38ms      0.38ms
+Revocation Check                    0.13ms      0.18ms      0.18ms
+DID Resolution (Cold)              74.85ms    149.12ms    149.12ms
+DID Creation                     1010.52ms   1214.46ms   1214.46ms
+Device Registration               934.14ms    943.62ms    943.62ms
+
+
+Results exported to: /home/forg/iota-identity-iot/benchmark-results/benchmark_results_20260203_175154.csv
+
+╔════════════════════════════════════════════════════════════╗
+║              Comparison with Traditional PKI               ║
+╚════════════════════════════════════════════════════════════╝
+
+============================================================
+                    ACADEMIC SOURCES
+============================================================
+
+[1] Zhu et al., 'Measuring the Latency and Pervasiveness
+    of TLS Certificate Revocation'
+    Passive and Active Measurements Conference (PAM), 2016
+    https://ant.isi.edu/~johnh/PAPERS/Zhu16a.pdf
+
+    Key findings:
+    - Median OCSP latency: 19-20ms (2015-2016 measurements)
+    - Previous study (Stark et al., 2012): 291ms median
+    - Long tail: <0.1% of requests took 5s to 8 minutes
+    - OCSP adds ~10% overhead to TLS handshake time
+    - 94% of OCSP traffic served by CDNs
+    - With connection reuse: 10ms median
+    - Median TLS handshake delay: 242ms
+
+[2] Liu et al., 'An End-to-End Measurement of Certificate
+    Revocation in the Web's PKI'
+    ACM Internet Measurement Conference (IMC), 2015
+    https://dl.acm.org/doi/10.1145/2815675.2815685
+
+    Key findings:
+    - 8% of certificates served on the Internet are revoked
+    - CRL files can be up to 76MB in size
+    - OCSP Stapling deployed on only 3% of certificates
+    - Mobile browsers NEVER check revocation status
+    - Chrome's CRLSet covers only 0.35% of revocations
+
+[3] Netcraft, 'Certificate revocation and the performance
+    of OCSP', April 2013
+    https://www.netcraft.com/blog/certificate-revocation-and-the-performance-of-ocsp
+
+    Key findings:
+    - OCSP responder reliability varies significantly by CA
+    - Some CAs had >6% request failure rate
+    - EV certificates require multiple OCSP checks (chain)
+    - CloudFlare reported 30% improvement with OCSP stapling
+
+============================================================
+                 TLS HANDSHAKE TIMES
+============================================================
+
+From Zhu et al. (2016) and industry measurements:
+    - Median TLS handshake time: 242ms [Zhu 2016]
+    - TLS 1.2 full handshake: 2 round-trips (2-RTT)
+    - TLS 1.3 full handshake: 1 round-trip (1-RTT)
+    - TLS 1.3 resumption: 0 round-trips (0-RTT)
+    - Typical range: 50-300ms depending on network latency
+
+============================================================
+                    COMPARISON TABLE
+============================================================
+
+----------------------------------------------------------------------
+Operation                          This System        Traditional PKI
+----------------------------------------------------------------------
+Revocation Check                 <1ms (bitmap)     19-20ms [Zhu 2016]
+                                                   291ms [Stark 2012]
+Worst Case Revocation                     <1ms    5s-8min (long tail)
+Failure Rate                     0% (on-chain)    Up to 6% [Netcraft]
+Mobile Support                    Full support    Never checked [Liu]
+Privacy                         No CA tracking   CA sees all requests
+Offline Verification          Yes (cached DID)        No (needs OCSP)
+----------------------------------------------------------------------
+
+Note: OCSP performance improved significantly since 2012 due to CDN
+adoption. However, our bitmap approach provides consistent <1ms lookups
+with no network dependency once the issuer DID is cached.
+
+============================================================
+                    RECENT DEVELOPMENTS
+============================================================
+
+2024-2025: Let's Encrypt announced it will stop supporting OCSP
+in May 2025, citing that browsers don't reliably check revocation
+status anyway (soft-fail behavior). This validates the need for
+alternative approaches like our blockchain-based bitmap system.
+
+Source: Feisty Duck Newsletter, 'The Slow Death of OCSP'
+https://www.feistyduck.com/newsletter/issue_121_the_slow_death_of_ocsp
+

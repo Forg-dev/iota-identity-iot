@@ -1,0 +1,39 @@
+    Finished `release` profile [optimized] target(s) in 0.35s
+     Running `target/release/benchmark --all --iterations 10 --identity-service 'http://localhost:8080' --output /home/forg/iota-identity-iot/benchmark-results/benchmark_results_20260203_133546.csv`
+╔════════════════════════════════════════════════════════════╗
+║       IOTA Identity IoT - Benchmark Suite                  ║
+╚════════════════════════════════════════════════════════════╝
+
+Configuration:
+  Identity Service: http://localhost:8080
+  Iterations: 10
+  Warm-up: enabled
+
+[2m2026-02-03T12:35:51.943404Z[0m [32m INFO[0m [2mbenchmark[0m[2m:[0m Identity Service is healthy
+
+>>> Running all benchmarks...
+
+
+Benchmark: DID Resolution (Cached)
+  This measures the time to resolve a DID from cache.
+  Expected: <1ms
+
+============================================================
+Benchmark: DID Resolution (Cached)
+============================================================
+Iterations: 10
+
+  Min:            0.14 ms
+  Max:            0.21 ms
+  Mean:           0.18 ms
+  Median:         0.19 ms
+  P95:            0.21 ms
+  P99:            0.21 ms
+  Std Dev:        0.03 ms
+============================================================
+
+Benchmark: Credential Issuance (via Device Registration)
+  This measures the time to register a device and issue a credential.
+  Note: This includes DID creation, so timing reflects full registration.
+  The credential issuance itself is <5ms but is bundled with DID creation.
+Error: Credential issuance failed: {"error":"Internal server error"}

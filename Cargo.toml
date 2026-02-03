@@ -50,10 +50,11 @@ futures = "0.3"
 
 # -----------------------------------------------------------------------------
 # WEB FRAMEWORK (Identity Service)
+# IMPORTANTE: Deve corrispondere alla versione usata da identity_iota (via tonic)
 # -----------------------------------------------------------------------------
-axum = { version = "0.7", features = ["macros", "ws"] }
-tower = { version = "0.4", features = ["full"] }
-tower-http = { version = "0.5", features = ["cors", "trace", "compression-gzip"] }
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace", "compression-gzip"] }
 hyper = { version = "1.0", features = ["full"] }
 
 # -----------------------------------------------------------------------------
@@ -134,3 +135,5 @@ debug = true
 [profile.bench]
 inherits = "release"
 debug = true
+
+# =============================================================================
