@@ -103,7 +103,7 @@ iota-identity-iot/
 ### 1. Clone and Build
 
 ```bash
-git clone https://github.com/pongib/iota-identity-iot.git
+git clone https://github.com/Forg-dev/iota-identity-iot.git
 cd iota-identity-iot
 cargo build --release
 ```
