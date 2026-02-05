@@ -13,13 +13,13 @@ This system provides a complete solution for IoT device identity management with
 - **On-Chain Revocation**: RevocationBitmap2022 for instant, verifiable credential revocation
 - **TLS Integration**: Mutual TLS authentication using DID-based credentials
 - **Offline Verification**: Once cached, credentials can be verified without network access
-- **150x Faster Revocation**: 0.13ms vs 19-20ms for traditional OCSP
+- **Faster Revocation**: 0.13ms vs 19-20ms for traditional OCSP
 
 ### Performance Highlights
 
 | Operation | Time | Comparison |
 |-----------|------|------------|
-| Revocation Check | 0.13ms | 150x faster than OCSP |
+| Revocation Check | 0.13ms | Faster than OCSP |
 | DID Resolution (cached) | 0.13ms | Local lookup |
 | Credential Verification | 0.24ms | Signature + revocation |
 | Device Registration | ~1s | One-time setup |
@@ -365,10 +365,6 @@ curl -s http://localhost:8080/api/v1/issuer/status | jq .
 - **Caching**: Moka
 - **TLS**: rustls + tokio-rustls
 - **Standards**: W3C DID v1.0, W3C VC v2.0, RevocationBitmap2022
-
-## License
-
-MIT License - See [LICENSE](LICENSE) for details.
 
 ## References
 
