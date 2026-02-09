@@ -586,6 +586,17 @@ impl DIDManager {
     // =========================================================================
     
     /// Rotate the verification key for a DID on the blockchain
+    /// 
+    /// This adds a new verification method with the provided public key to the DID Document.
+    /// The old verification method is retained for backward compatibility (credentials issued
+    /// against the old key remain verifiable until explicitly revoked).
+    /// 
+    /// # Arguments
+    /// * `did` - The DID to rotate keys for (must be controlled by this service)
+    /// * `new_public_key_hex` - The new Ed25519 public key in hex format (64 hex chars = 32 bytes)
+    /// 
+    /// # Returns
+    /// The fragment identifier of the new verification method (e.g., "#key-2")
     pub async fn rotate_key(
         &self,
         did: &str,
@@ -593,6 +604,7 @@ impl DIDManager {
     ) -> IdentityResult<String> {
         info!(did = %did, "Rotating key for DID on IOTA Rebased");
         
+        // Validate and decode the new public key
         let new_public_key_bytes = hex::decode(new_public_key_hex)
             .map_err(|e| IdentityError::InvalidPublicKey(e.to_string()))?;
         
@@ -602,6 +614,7 @@ impl DIDManager {
             ));
         }
         
+        // Get control info for this DID
         let control_info = {
             let control_map = self.did_control_info.read();
             control_map.get(did).cloned()
@@ -613,6 +626,7 @@ impl DIDManager {
             return Err(IdentityError::DIDAlreadyDeactivated(did.to_string()));
         }
         
+        // Resolve current DID Document
         let mut current_doc = self.resolve_did(did).await?;
         
         // Create identity client and get sender address
@@ -629,24 +643,34 @@ impl DIDManager {
             tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
         }
         
-        // Generate new verification method in the document
-        let new_fragment = current_doc
-            .generate_method(
-                self.storage.as_ref(),
-                JwkMemStore::ED25519_KEY_TYPE,
-                JwsAlgorithm::EdDSA,
-                None,
-                MethodScope::VerificationMethod,
-            )
-            .await
+        // Create JWK from the provided public key
+        let new_jwk = create_ed25519_jwk_from_bytes(&new_public_key_bytes)?;
+        
+        // Generate a unique fragment name for the new key
+        // Count existing verification methods to determine the next key number
+        let existing_methods = current_doc.methods(None).len();
+        let new_fragment = format!("key-{}", existing_methods + 1);
+        
+        // Create verification method with the provided public key
+        let new_method = VerificationMethod::new_from_jwk(
+            current_doc.id().clone(),
+            new_jwk,
+            Some(&new_fragment),
+        ).map_err(|e| IdentityError::DIDUpdateError(format!(
+            "Failed to create verification method from provided key: {}", e
+        )))?;
+        
+        // Insert the new method into the document
+        current_doc.insert_method(new_method, MethodScope::VerificationMethod)
             .map_err(|e| IdentityError::DIDUpdateError(format!(
-                "Failed to generate new verification method: {}", e
+                "Failed to insert new verification method: {}", e
             )))?;
         
-        debug!(new_fragment = %new_fragment, "New verification method generated");
+        debug!(new_fragment = %new_fragment, "New verification method added with provided public key");
         
         info!("Publishing key rotation to IOTA Rebased...");
         
+        // Publish the updated DID Document
         identity_client
             .publish_did_document_update(current_doc, GAS_BUDGET_UPDATE_DID)
             .await
@@ -654,16 +678,18 @@ impl DIDManager {
                 "Failed to publish DID document update: {}", e
             )))?;
         
+        // Update control info with new fragment
+        let fragment_with_hash = format!("#{}", new_fragment);
         {
             let mut control_map = self.did_control_info.write();
             if let Some(info) = control_map.get_mut(did) {
-                info.fragment = new_fragment.clone();
+                info.fragment = fragment_with_hash.clone();
             }
         }
         
-        info!(did = %did, new_fragment = %new_fragment, "Key rotation completed successfully");
+        info!(did = %did, new_fragment = %fragment_with_hash, "Key rotation completed successfully");
         
-        Ok(new_fragment)
+        Ok(fragment_with_hash)
     }
     
     /// Check if a DID has been deactivated
