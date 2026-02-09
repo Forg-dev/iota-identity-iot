@@ -32,8 +32,8 @@ NANOS_PER_IOTA = 1_000_000_000
 DEFAULT_ISSUER_FILE = Path.home() / ".iota-identity-service" / "issuer_identity.json"
 
 # Faucet gives ~1 IOTA per request, cooldown is ~60 seconds
-TOKENS_PER_REQUEST = 1.0  # IOTA
-COOLDOWN_SECONDS = 65  # Add buffer to be safe
+TOKENS_PER_REQUEST = 19.0  # IOTA
+COOLDOWN_SECONDS = 3  # Add buffer to be safe
 DEFAULT_TARGET_IOTA = 100
 
 
