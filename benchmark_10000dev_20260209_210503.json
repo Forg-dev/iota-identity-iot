@@ -1,0 +1,26 @@
+{
+  "config": {
+    "devices": 10000,
+    "concurrency": 1,
+    "url": "http://localhost:8080",
+    "timestamp": "2026-02-09T21:05:03.835442"
+  },
+  "results": {
+    "total": 10000,
+    "success": 10000,
+    "failed": 0,
+    "success_rate_percent": 100.0,
+    "total_time_seconds": 9953.584705114365,
+    "throughput_per_second": 1.0046631737470206
+  },
+  "latencies": {
+    "count": 10000,
+    "min_ms": 762.8626823425293,
+    "max_ms": 8576.743841171265,
+    "mean_ms": 995.1509410381317,
+    "p50_ms": 939.7094249725342,
+    "p95_ms": 1413.013219833374,
+    "p99_ms": 2166.861057281494
+  },
+  "errors": []
+}

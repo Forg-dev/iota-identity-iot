@@ -700,7 +700,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Print comparison notes with sources
+    /* Print comparison notes with sources
     println!();
     println!("╔════════════════════════════════════════════════════════════╗");
     println!("║              Comparison with Traditional PKI               ║");
@@ -789,6 +789,6 @@ async fn main() -> Result<()> {
     println!("Source: Feisty Duck Newsletter, 'The Slow Death of OCSP'");
     println!("https://www.feistyduck.com/newsletter/issue_121_the_slow_death_of_ocsp");
     println!();
-
+    */
     Ok(())
 }
