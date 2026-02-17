@@ -430,11 +430,11 @@ impl DIDManager {
         // Store control info for this DID (using the document key, not tx key)
         {
             let control_info = DIDControlInfo {
-                did: did.clone(),
-                key_id: doc_key_result.key_id.clone(),
-                public_key_jwk: doc_key_result.jwk.clone(),
-                fragment: fragment.clone(),
-                deactivated: false,
+            did: did.clone(),
+            key_id: key_id.clone(),               // ← il tx key usato per pubblicare
+            public_key_jwk: public_key_jwk.clone(), // ← il tx key JWK
+            fragment: fragment.clone(),
+            deactivated: false,
             };
             let mut control_map = self.did_control_info.write();
             control_map.insert(did.clone(), control_info);

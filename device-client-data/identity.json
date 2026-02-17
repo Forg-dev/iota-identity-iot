@@ -1,0 +1,14 @@
+{
+  "id": "b4117673-40e7-45f2-95da-1c253e876f8c",
+  "did": "did:iota:testnet:0xa4a2461a3425c90d76a551045b76e89b8d1cd87e6e550b96d54a23c320a23be7",
+  "object_id": "0xa4a2461a3425c90d76a551045b76e89b8d1cd87e6e550b96d54a23c320a23be7",
+  "public_key_hex": "42fcecd0815b8edb4e952eddf69918b34a8ffe77445b9452bf66684ff59eb0a1",
+  "device_type": "sensor",
+  "capabilities": [
+    "temperature",
+    "humidity"
+  ],
+  "created_at": "2026-02-17T00:39:21.397898538Z",
+  "updated_at": "2026-02-17T00:39:21.397898538Z",
+  "status": "active"
+}
