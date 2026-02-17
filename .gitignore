@@ -42,3 +42,7 @@ benchmarks/output/
 # Build artifacts
 dist/
 build/
+# Device test data
+device-server/
+device-client-data/
+device-*-test/
