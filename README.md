@@ -373,7 +373,7 @@ curl -s http://localhost:8080/api/v1/issuer/status | jq .
 3. IOTA Foundation. "IOTA DID Method Specification v2.0"
 4. DIF. "RevocationBitmap2022 Status Method"
 5. Bernstein et al. "Ed25519: High-speed signatures" (2012)
-
+6. Iota-sdk. "https://github.com/iotaledger/iota/tree/develop/crates/iota-sdk"
 ---
 
 *Developed as part of a thesis project on decentralized identity for IoT*
