@@ -608,11 +608,36 @@ async fn deactivate_did(
         Ok(()) => {
             state.cache.invalidate_did_document(&did).await;
 
+            // Revoke in-memory (for local checks)
             let _ = state.revocation_manager.revoke(
                 &did,
                 Some("DID deactivated on-chain".to_string()),
                 Some("system".to_string()),
             );
+
+            // Also revoke on-chain via RevocationBitmap2022 if credential index is known.
+            // This ensures the revocation persists across server restarts and is
+            // verifiable by any party resolving the issuer's DID Document.
+            if let Some(index) = state.onchain_revocation_manager.get_index_for_credential(&did) {
+                if let Ok(()) = state.onchain_revocation_manager.revoke(
+                    index,
+                    &did,
+                    Some("DID deactivated on-chain".to_string()),
+                    Some("system".to_string()),
+                ) {
+                    // Publish updated bitmap on-chain
+                    let issuer_did = state.onchain_revocation_manager.issuer_did();
+                    if state.did_manager.has_control(&issuer_did) {
+                        if let Ok(bitmap_data_url) = state.onchain_revocation_manager.encode_service_endpoint() {
+                            let _ = state.did_manager
+                                .update_revocation_service(&issuer_did, "revocation", &bitmap_data_url)
+                                .await;
+                            state.onchain_revocation_manager.mark_published();
+                            state.cache.invalidate_did_document(&issuer_did).await;
+                        }
+                    }
+                }
+            }
 
             Ok(Json(shared::types::DIDDeactivationResponse {
                 success: true,

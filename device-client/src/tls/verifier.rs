@@ -49,6 +49,9 @@ struct JwtHeader {
     #[serde(default)]
     #[allow(dead_code)]
     typ: Option<String>,
+    /// Key ID - references the specific verification method used to sign
+    #[serde(default)]
+    kid: Option<String>,
 }
 
 /// JWT Payload for Verifiable Credential
@@ -130,10 +133,12 @@ pub struct CredentialVerifier {
     /// DID Resolver for fetching issuer public keys
     resolver: std::sync::Arc<DIDResolver>,
     
-    /// Identity Service URL for revocation checks
+    /// Identity Service URL (retained for API compatibility)
+    #[allow(dead_code)]
     identity_service_url: String,
     
-    /// HTTP client for revocation checks
+    /// HTTP client (retained for API compatibility)
+    #[allow(dead_code)]
     http_client: reqwest::Client,
     
     /// Whether to check revocation status
@@ -270,7 +275,7 @@ impl CredentialVerifier {
         // Check revocation (if enabled)
         if self.check_revocation {
             if let Some(index) = credential.revocation_index {
-                self.check_revocation_status(index).await?;
+                self.check_revocation_status(&credential.issuer_did, index).await?;
             }
         }
         
@@ -320,8 +325,8 @@ impl CredentialVerifier {
                 format!("Invalid signature format: {}", e)
             ))?;
         
-        // Get issuer's public key from DID Document
-        let public_key = self.get_issuer_public_key(issuer_did).await?;
+        // Get issuer's public key from DID Document, using kid hint if available
+        let public_key = self.get_issuer_public_key(issuer_did, header.kid.as_deref()).await?;
         
         // The signed message is "header.payload"
         let signed_message = format!("{}.{}", parts[0], parts[1]);
@@ -337,7 +342,11 @@ impl CredentialVerifier {
     }
     
     /// Get the issuer's public key from their DID Document
-    async fn get_issuer_public_key(&self, issuer_did: &str) -> IdentityResult<VerifyingKey> {
+    /// 
+    /// If a `kid` hint is provided (from the JWT header), the method matching
+    /// that fragment is preferred. This ensures the correct key is used when
+    /// the issuer has multiple verification methods (e.g. after key rotation).
+    async fn get_issuer_public_key(&self, issuer_did: &str, kid_hint: Option<&str>) -> IdentityResult<VerifyingKey> {
         // Resolve the DID document
         let did_document = self.resolver.resolve(issuer_did).await?;
         
@@ -349,7 +358,24 @@ impl CredentialVerifier {
             });
         }
         
-        // Try to find an Ed25519 key from verification methods
+        // If kid hint is provided, try to find the matching method first
+        if let Some(kid) = kid_hint {
+            for method in &did_document.verification_methods {
+                if method.id == kid || method.id.ends_with(kid) {
+                    if let Some(public_key) = self.decode_multibase_key(&method.public_key_multibase) {
+                        debug!(issuer = %issuer_did, kid = %kid, "Found key matching kid hint");
+                        return Ok(public_key);
+                    }
+                }
+            }
+            warn!(
+                issuer = %issuer_did,
+                kid = %kid,
+                "kid hint did not match any verification method, trying all methods"
+            );
+        }
+        
+        // Fallback: try all Ed25519 keys from verification methods
         for method in &did_document.verification_methods {
             // Try publicKeyMultibase (primary format for IOTA Identity)
             if let Some(public_key) = self.decode_multibase_key(&method.public_key_multibase) {
@@ -390,45 +416,147 @@ impl CredentialVerifier {
         VerifyingKey::from_bytes(&key_array).ok()
     }
     
-    /// Check if a credential is revoked
-    async fn check_revocation_status(&self, revocation_index: u32) -> IdentityResult<()> {
-        let url = format!(
-            "{}/api/v1/credential/status-onchain/{}",
-            self.identity_service_url, revocation_index
-        );
+    /// Verify that a claimed public key is present in the subject's DID Document
+    /// 
+    /// This prevents impersonation attacks where an attacker presents a valid
+    /// credential with a different key pair. The public key used in the 
+    /// challenge-response MUST correspond to a verification method in the
+    /// subject's on-chain DID Document.
+    pub async fn verify_public_key_binding(
+        &self,
+        subject_did: &str,
+        claimed_public_key_hex: &str,
+    ) -> IdentityResult<()> {
+        // Resolve the subject's DID Document from blockchain
+        let did_document = self.resolver.resolve(subject_did).await?;
         
-        let response = self.http_client
-            .get(&url)
-            .timeout(std::time::Duration::from_secs(5))
-            .send()
-            .await
-            .map_err(|e| IdentityError::NetworkConnectionError {
-                endpoint: url.clone(),
-                reason: e.to_string(),
-            })?;
-        
-        if !response.status().is_success() {
-            // If we can't check revocation, log warning but continue
-            // This allows offline operation with cached data
-            warn!(
-                "Could not check revocation status: HTTP {}",
-                response.status()
-            );
-            return Ok(());
+        if did_document.verification_methods.is_empty() {
+            return Err(IdentityError::DIDAuthenticationError(
+                format!("No verification methods found in DID Document for {}", subject_did)
+            ));
         }
         
-        let status: serde_json::Value = response.json().await
-            .map_err(|e| IdentityError::SerializationError(e.to_string()))?;
+        // Decode the claimed public key
+        let claimed_bytes = hex::decode(claimed_public_key_hex)
+            .map_err(|e| IdentityError::InvalidSignature(
+                format!("Invalid claimed public key hex: {}", e)
+            ))?;
         
-        if status.get("revoked").and_then(|v| v.as_bool()).unwrap_or(false) {
+        // Check if any verification method in the DID Document matches
+        for method in &did_document.verification_methods {
+            if let Some(key) = self.decode_multibase_key(&method.public_key_multibase) {
+                if key.as_bytes() == claimed_bytes.as_slice() {
+                    debug!(
+                        subject = %subject_did,
+                        method_id = %method.id,
+                        "Public key binding verified against DID Document"
+                    );
+                    return Ok(());
+                }
+            }
+        }
+        
+        Err(IdentityError::DIDAuthenticationError(
+            format!(
+                "Public key not found in DID Document for {}. \
+                 The claimed key does not match any on-chain verification method.",
+                subject_did
+            )
+        ))
+    }
+    
+    /// Check if a credential is revoked by reading the RevocationBitmap2022
+    /// from the issuer's DID Document on the blockchain.
+    ///
+    /// This is a fully decentralized check: the verifier resolves the issuer's
+    /// DID Document (from cache or blockchain), extracts the RevocationBitmap2022
+    /// service, decompresses the Roaring Bitmap and inspects the bit at the
+    /// credential's revocation index. No contact with the Identity Service is needed.
+    async fn check_revocation_status(&self, issuer_did: &str, revocation_index: u32) -> IdentityResult<()> {
+        // Resolve the issuer's DID Document (may be cached from signature verification)
+        let did_document = self.resolver.resolve(issuer_did).await?;
+        
+        // Find the RevocationBitmap2022 service
+        let bitmap_service = did_document.service
+            .as_ref()
+            .and_then(|services| {
+                services.iter().find(|s| s.service_type == "RevocationBitmap2022")
+            });
+        
+        let service = match bitmap_service {
+            Some(s) => s,
+            None => {
+                // No revocation service in DID Document — cannot verify revocation.
+                // This is treated as a warning rather than an error to allow
+                // operation with issuers that haven't set up on-chain revocation yet.
+                warn!(
+                    issuer = %issuer_did,
+                    "No RevocationBitmap2022 service in issuer's DID Document, skipping revocation check"
+                );
+                return Ok(());
+            }
+        };
+        
+        // Decode the bitmap from the service endpoint data URL
+        let data_url = &service.service_endpoint;
+        let is_revoked = Self::check_bitmap_revocation(data_url, revocation_index)?;
+        
+        if is_revoked {
             return Err(IdentityError::CredentialRevoked {
                 credential_id: format!("index:{}", revocation_index),
-                reason: "Credential has been revoked".into(),
+                reason: "Credential revoked (RevocationBitmap2022 on-chain check)".into(),
             });
         }
         
-        debug!(index = revocation_index, "Revocation check passed");
+        debug!(
+            index = revocation_index,
+            issuer = %issuer_did,
+            "On-chain revocation check passed"
+        );
         Ok(())
+    }
+    
+    /// Decode a RevocationBitmap2022 data URL and check a specific index.
+    ///
+    /// The data URL format is: `data:application/octet-stream;base64,<zlib-compressed-roaring-bitmap>`
+    fn check_bitmap_revocation(data_url: &str, index: u32) -> IdentityResult<bool> {
+        use base64::Engine;
+        use flate2::read::ZlibDecoder;
+        use roaring::RoaringBitmap;
+        use std::io::Read;
+        
+        let prefix = "data:application/octet-stream;base64,";
+        if !data_url.starts_with(prefix) {
+            return Err(IdentityError::InvalidCredential(
+                format!("Invalid RevocationBitmap2022 data URL format")
+            ));
+        }
+        
+        let base64_data = &data_url[prefix.len()..];
+        
+        // Base64 decode
+        let compressed = base64::engine::general_purpose::STANDARD
+            .decode(base64_data)
+            .map_err(|e| IdentityError::InvalidCredential(
+                format!("Failed to decode revocation bitmap: {}", e)
+            ))?;
+        
+        // Zlib decompress
+        let mut decoder = ZlibDecoder::new(&compressed[..]);
+        let mut decompressed = Vec::new();
+        decoder.read_to_end(&mut decompressed)
+            .map_err(|e| IdentityError::InvalidCredential(
+                format!("Failed to decompress revocation bitmap: {}", e)
+            ))?;
+        
+        // Deserialize Roaring Bitmap
+        let bitmap = RoaringBitmap::deserialize_from(&decompressed[..])
+            .map_err(|e| IdentityError::InvalidCredential(
+                format!("Failed to deserialize revocation bitmap: {}", e)
+            ))?;
+        
+        // Check if the bit at the credential's index is set (1 = revoked)
+        Ok(bitmap.contains(index))
     }
 }
 

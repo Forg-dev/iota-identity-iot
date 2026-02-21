@@ -224,6 +224,18 @@ impl OnChainRevocationManager {
         Ok(index)
     }
     
+    /// Look up the revocation bitmap index for a credential ID
+    /// 
+    /// # Arguments
+    /// * `credential_id` - The credential ID to look up
+    /// 
+    /// # Returns
+    /// The revocation index if found, None otherwise
+    pub fn get_index_for_credential(&self, credential_id: &str) -> Option<u32> {
+        let mapping = self.credential_to_index.read();
+        mapping.get(credential_id).copied()
+    }
+    
     /// Check if a credential is revoked by its index
     ///
     /// # Arguments

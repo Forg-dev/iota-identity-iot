@@ -388,28 +388,26 @@ impl DIDManager {
         let network_name = identity_client.network();
         let mut unpublished_doc = IotaDocument::new(network_name);
 
-        // Generate and add verification method for the DID document itself
-        // (this is separate from the transaction signing key)
-        let doc_key_result = self.storage
-            .key_storage()
-            .generate(KeyType::new("Ed25519"), JwsAlgorithm::EdDSA)
-            .await
+        // Insert the device's actual public key as the verification method.
+        // This is the key the device generated locally and sent in the
+        // registration request — it MUST be the key in the DID Document so
+        // that verifiers can bind the challenge-response to the on-chain identity.
+        let device_jwk = create_ed25519_jwk_from_bytes(&public_key_bytes)?;
+        
+        let device_method = VerificationMethod::new_from_jwk(
+            unpublished_doc.id().clone(),
+            device_jwk,
+            Some("key-1"),
+        ).map_err(|e| IdentityError::DIDCreationError(format!(
+            "Failed to create verification method from device key: {}", e
+        )))?;
+        
+        unpublished_doc.insert_method(device_method, MethodScope::authentication())
             .map_err(|e| IdentityError::DIDCreationError(format!(
-                "Failed to generate document key: {}", e
+                "Failed to insert device verification method: {}", e
             )))?;
-            
-        let fragment = unpublished_doc
-            .generate_method(
-                self.storage.as_ref(),
-                JwkMemStore::ED25519_KEY_TYPE,
-                JwsAlgorithm::EdDSA,
-                None,
-                MethodScope::VerificationMethod,
-            )
-            .await
-            .map_err(|e| IdentityError::DIDCreationError(format!(
-                "Failed to generate verification method: {}", e
-            )))?;
+        
+        let fragment = "#key-1".to_string();
 
         // Publish DID Document to blockchain
         info!("Publishing DID Document to IOTA Rebased...");
@@ -660,8 +658,28 @@ impl DIDManager {
             "Failed to create verification method from provided key: {}", e
         )))?;
         
+        // Remove all existing verification methods before inserting the new one.
+        // In this system each device has a single active key at a time; old keys
+        // must be invalidated immediately to prevent continued use after compromise.
+        // Credentials remain verifiable because they are signed by the *issuer's*
+        // key, not the device's key.
+        let old_method_ids: Vec<_> = current_doc
+            .methods(None)
+            .iter()
+            .map(|m| m.id().clone())
+            .collect();
+        
+        for method_id in &old_method_ids {
+            if current_doc.remove_method(method_id).is_none() {
+                return Err(IdentityError::DIDUpdateError(format!(
+                    "Failed to remove old verification method {}: method not found", method_id
+                )));
+            }
+            debug!(removed_method = %method_id, "Removed old verification method");
+        }
+        
         // Insert the new method into the document
-        current_doc.insert_method(new_method, MethodScope::VerificationMethod)
+        current_doc.insert_method(new_method, MethodScope::authentication())
             .map_err(|e| IdentityError::DIDUpdateError(format!(
                 "Failed to insert new verification method: {}", e
             )))?;

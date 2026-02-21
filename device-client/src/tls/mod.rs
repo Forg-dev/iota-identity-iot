@@ -252,6 +252,10 @@ impl TlsClient {
             IdentityError::DIDAuthenticationError("Server did not provide public key".into())
         })?;
         
+        // Verify that the server's public key is in their DID Document (prevents impersonation)
+        self.verifier.verify_public_key_binding(&server_hello.did, &server_public_key).await?;
+        debug!("Server public key binding verified against DID Document");
+        
         // Verify server's response to our challenge
         let challenge_start = Instant::now();
         let server_response = server_hello.challenge_response.ok_or_else(|| {
@@ -461,6 +465,10 @@ impl TlsServer {
         let client_public_key = client_hello.public_key.ok_or_else(|| {
             IdentityError::DIDAuthenticationError("Client did not provide public key".into())
         })?;
+        
+        // Verify that the client's public key is in their DID Document (prevents impersonation)
+        self.verifier.verify_public_key_binding(&client_hello.did, &client_public_key).await?;
+        debug!("Client public key binding verified against DID Document");
         
         // Get client's challenge
         let client_challenge = client_hello.challenge.ok_or_else(|| {

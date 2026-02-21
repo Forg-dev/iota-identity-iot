@@ -319,7 +319,7 @@ impl CredentialIssuer {
         Ok(CredentialProof {
             proof_type: "Ed25519Signature2020".to_string(),
             created: Utc::now(),
-            verification_method: format!("{}#key-1", issuer_did),
+            verification_method: format!("{}#issuer-key-1", issuer_did),
             proof_purpose: "assertionMethod".to_string(),
             proof_value: signature_base64,
         })

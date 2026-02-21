@@ -60,6 +60,10 @@ parking_lot.workspace = true
 urlencoding.workspace = true
 clap.workspace = true
 
+# Revocation bitmap (for local verification of RevocationBitmap2022)
+roaring = "0.10"
+flate2 = "1.0"
+
 [dev-dependencies]
 tokio-test.workspace = true
 tempfile.workspace = true
