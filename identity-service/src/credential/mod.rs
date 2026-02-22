@@ -63,6 +63,7 @@ pub struct IssuerIdentity {
     /// The fragment of the verification method in the DID Document
     #[serde(default)]
     pub verification_method_fragment: Option<String>,
+    pub next_revocation_index: Option<u32>,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -108,6 +109,11 @@ impl CredentialIssuer {
                 // This allows the service to modify the DID after a restart
                 if let (Some(tx_key_hex), Some(fragment)) = (&identity.tx_key_hex, &identity.verification_method_fragment) {
                     info!(did = %identity.did, "Restoring DID control info from stored transaction key");
+                    // Restore revocation counter from persisted state
+                    if let Some(next_idx) = identity.next_revocation_index {
+                        revocation_manager.set_next_index(next_idx);
+                        info!(next_index = next_idx, "Restored revocation counter from storage");
+                    }
                     if let Err(e) = did_manager.restore_issuer_control_info(
                         &identity.did,
                         tx_key_hex,
@@ -191,6 +197,7 @@ impl CredentialIssuer {
             signing_key_hex: hex::encode(self.signing_key.to_bytes()),
             tx_key_hex: if tx_key_hex.is_empty() { None } else { Some(tx_key_hex.to_string()) },
             verification_method_fragment: if fragment.is_empty() { None } else { Some(fragment.to_string()) },
+            next_revocation_index: Some(self.revocation_manager.get_next_index()),
             created_at: chrono::Utc::now(),
         };
         
@@ -202,6 +209,32 @@ impl CredentialIssuer {
             .map_err(|e| IdentityError::StorageIOError(format!("Failed to write issuer identity: {}", e)))?;
         
         info!(path = ?identity_file, has_tx_key = !tx_key_hex.is_empty(), "Saved issuer identity to storage");
+        
+        Ok(())
+    }
+
+    /// Save the current state (primarily the revocation counter) to persist across restarts
+    pub fn save_current_state(&self) -> IdentityResult<()> {
+        let Some(ref path) = self.storage_path else {
+            return Ok(());
+        };
+        
+        let identity_file = path.join("issuer_identity.json");
+        if !identity_file.exists() {
+            return Ok(());
+        }
+        
+        let content = std::fs::read_to_string(&identity_file)
+            .map_err(|e| IdentityError::StorageIOError(format!("Failed to read identity: {}", e)))?;
+        let mut identity: IssuerIdentity = serde_json::from_str(&content)
+            .map_err(|e| IdentityError::StorageIOError(format!("Failed to parse identity: {}", e)))?;
+        
+        identity.next_revocation_index = Some(self.revocation_manager.get_next_index());
+        
+        let updated = serde_json::to_string_pretty(&identity)
+            .map_err(|e| IdentityError::StorageIOError(format!("Failed to serialize: {}", e)))?;
+        std::fs::write(&identity_file, updated)
+            .map_err(|e| IdentityError::StorageIOError(format!("Failed to write: {}", e)))?;
         
         Ok(())
     }

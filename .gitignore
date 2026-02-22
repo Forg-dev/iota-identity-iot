@@ -46,3 +46,4 @@ build/
 device-server/
 device-client-data/
 device-*-test/
+demo/

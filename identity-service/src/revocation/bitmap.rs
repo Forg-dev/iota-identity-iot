@@ -103,6 +103,24 @@ impl OnChainRevocationManager {
         info!(old_did = %*self.issuer_did.read(), new_did = %new_did, "Updating issuer DID");
         *self.issuer_did.write() = new_did;
     }
+
+    /// Set the next available index (used when restoring from persisted state)
+    pub fn set_next_index(&self, index: u32) {
+        let current = self.next_index.load(Ordering::SeqCst);
+        if index > current {
+            self.next_index.store(index, Ordering::SeqCst);
+            info!(
+                old_index = current, 
+                new_index = index, 
+                "Restored next revocation index from persisted state"
+            );
+        }
+    }
+
+    /// Get the current next index value
+    pub fn get_next_index(&self) -> u32 {
+        self.next_index.load(Ordering::SeqCst)
+    }
     
     /// Allocate the next available revocation index for a new credential
     ///

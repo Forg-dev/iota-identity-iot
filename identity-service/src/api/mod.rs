@@ -20,7 +20,7 @@ use axum::{
 };
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use shared::{error::IdentityError, types::*};
 
@@ -115,6 +115,11 @@ async fn register_device(
         )
         .await
         .map_err(ApiError::from)?;
+
+    // Persist updated revocation counter
+    if let Err(e) = state.credential_issuer.save_current_state() {
+        warn!("Failed to persist revocation counter: {}", e);
+    }
 
     // Calculate expiration
     let expires_at = chrono::Utc::now()
