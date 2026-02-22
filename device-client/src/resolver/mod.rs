@@ -212,7 +212,10 @@ impl DIDResolver {
                 shared::types::Service {
                     id: s.id().to_string(),
                     service_type,
-                    service_endpoint: format!("{:?}", s.service_endpoint()),
+                    service_endpoint: match s.service_endpoint() {
+                    identity_iota::document::ServiceEndpoint::One(url) => url.to_string(),
+                    other => format!("{}", other),
+                    },
                 }
             })
             .collect();

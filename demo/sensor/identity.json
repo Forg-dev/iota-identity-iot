@@ -1,0 +1,13 @@
+{
+  "id": "9b1a8fea-fe9f-45b7-934e-170bb7bff115",
+  "did": "did:iota:testnet:0xc6f5be0d17a2dc826de119cc9cfd933cbd06bbc948f41aaa0dc9e219dadfb89d",
+  "object_id": "0xc6f5be0d17a2dc826de119cc9cfd933cbd06bbc948f41aaa0dc9e219dadfb89d",
+  "public_key_hex": "05fc30ce82c222d256c643cb0308f84a12c984c3f7ff56ee8e197f2bf02c112b",
+  "device_type": "sensor",
+  "capabilities": [
+    "temperature"
+  ],
+  "created_at": "2026-02-22T00:52:28.215175344Z",
+  "updated_at": "2026-02-22T00:52:28.215175344Z",
+  "status": "active"
+}

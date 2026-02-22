@@ -778,7 +778,10 @@ fn convert_to_simplified(doc: &identity_iota::iota::IotaDocument) -> SimplifiedD
                     .cloned()
                     .unwrap_or_else(|| "unknown".to_string());
 
-                let service_endpoint = format!("{:?}", s.service_endpoint());
+                let service_endpoint = match s.service_endpoint() {
+                    identity_iota::document::ServiceEndpoint::One(url) => url.to_string(),
+                    other => format!("{}", other),
+                };
 
                 shared::types::Service {
                     id: s.id().to_string(),
