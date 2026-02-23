@@ -110,6 +110,7 @@ enum Commands {
 
     /// Clear all stored device data
     Clear,
+    RotateKey,
 }
 
 #[tokio::main]
@@ -151,6 +152,9 @@ async fn main() -> Result<()> {
         }
         Commands::Clear => {
             clear_storage(&config).await?;
+        }
+        Commands::RotateKey => {
+            rotate_key(&config).await?;
         }
     }
 
@@ -368,6 +372,92 @@ async fn clear_storage(config: &DeviceClientConfig) -> Result<()> {
     } else {
         println!("Cancelled.");
     }
+
+    Ok(())
+}
+
+// La funzione rotate_key, aggiungila dopo clear_storage:
+async fn rotate_key(config: &DeviceClientConfig) -> Result<()> {
+    info!("Rotating device key...");
+
+    let storage = device_client::SecureStorage::new(&config.storage).await?;
+
+    // Load existing identity
+    let identity = storage.load_identity().await?
+        .ok_or_else(|| anyhow::anyhow!("No device identity found. Register first."))?;
+
+    let did = identity.did.clone();
+    println!("  Rotating key for DID: {}", did);
+
+    // Generate new Ed25519 key pair
+    use ed25519_dalek::SigningKey;
+    use rand::rngs::OsRng;
+
+    let new_signing_key = SigningKey::generate(&mut OsRng);
+    let new_public_key_hex = hex::encode(new_signing_key.verifying_key().as_bytes());
+    let new_private_key_hex = hex::encode(new_signing_key.to_bytes());
+
+    info!("Generated new Ed25519 keypair");
+
+    // Write new private key to a temporary file first (crash safety)
+    let data_dir = &config.storage.data_path;
+    let tmp_key_path = data_dir.join("private_key.hex.new");
+    let key_path = data_dir.join("private_key.hex");
+
+    std::fs::write(&tmp_key_path, &new_private_key_hex)
+        .map_err(|e| anyhow::anyhow!("Failed to write temporary key: {}", e))?;
+
+    // Call the Identity Service to rotate the key on-chain
+    let client = reqwest::Client::new();
+    let did_encoded = urlencoding::encode(&did);
+    let url = format!(
+        "{}/api/v1/did/rotate-key/{}",
+        config.identity_service_url, did_encoded
+    );
+
+    println!("  Submitting rotation to blockchain...");
+
+    let response = client
+        .post(&url)
+        .json(&shared::types::KeyRotationRequest {
+            new_public_key: new_public_key_hex.clone(),
+        })
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to contact Identity Service: {}", e))?;
+
+    if !response.status().is_success() {
+        // Clean up temp file
+        let _ = std::fs::remove_file(&tmp_key_path);
+        let body = response.text().await.unwrap_or_default();
+        return Err(anyhow::anyhow!("Key rotation failed: {}", body));
+    }
+
+    let result: shared::types::KeyRotationResponse = response
+        .json()
+        .await
+        .map_err(|e| anyhow::anyhow!("Invalid response: {}", e))?;
+
+    if !result.success {
+        // Clean up temp file
+        let _ = std::fs::remove_file(&tmp_key_path);
+        return Err(anyhow::anyhow!(
+            "Key rotation failed: {}",
+            result.error.unwrap_or_else(|| "Unknown error".into())
+        ));
+    }
+
+    // On-chain rotation succeeded — now atomically replace the private key
+    std::fs::rename(&tmp_key_path, &key_path)
+        .map_err(|e| anyhow::anyhow!("Failed to update private key file: {}", e))?;
+
+    println!("\n✓ Key rotated successfully!");
+    println!("  DID: {}", did);
+    if let Some(ref method_id) = result.new_verification_method_id {
+        println!("  New verification method: {}", method_id);
+    }
+    println!("  New public key: {}...", &new_public_key_hex[..16]);
+    println!("  Private key updated in: {}", key_path.display());
 
     Ok(())
 }
