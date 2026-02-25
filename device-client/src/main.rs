@@ -447,7 +447,7 @@ async fn rotate_key(config: &DeviceClientConfig) -> Result<()> {
         ));
     }
 
-    // On-chain rotation succeeded — now atomically replace the private key
+    // On-chain rotation succeeded, now replace the private key
     std::fs::rename(&tmp_key_path, &key_path)
         .map_err(|e| anyhow::anyhow!("Failed to update private key file: {}", e))?;
 
