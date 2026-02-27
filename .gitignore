@@ -47,3 +47,8 @@ device-server/
 device-client-data/
 device-*-test/
 demo/
+bench-client/
+bench-server/
+SYSTEM_DOCUMENTATION.md
+*.json
+benchmark_tls_*.py
