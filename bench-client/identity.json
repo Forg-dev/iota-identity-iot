@@ -1,0 +1,11 @@
+{
+  "id": "869de606-e7b5-4e6a-be5b-532fdcf9a35b",
+  "did": "did:iota:testnet:0xd8634d2440ea92ca7a0c9eeb8e98861acd1e58d2b3eae4691a84b736e61224bb",
+  "object_id": "0xd8634d2440ea92ca7a0c9eeb8e98861acd1e58d2b3eae4691a84b736e61224bb",
+  "public_key_hex": "873ebebfc6654f44f22578bc90a1dea61801de192f04ddb65e5f17c937eaa85f",
+  "device_type": "sensor",
+  "capabilities": [],
+  "created_at": "2026-02-27T01:08:32.243727808Z",
+  "updated_at": "2026-02-27T01:08:32.243727808Z",
+  "status": "active"
+}

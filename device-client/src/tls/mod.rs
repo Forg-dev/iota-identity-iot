@@ -165,6 +165,9 @@ impl TlsClient {
                 reason: e.to_string(),
             })?;
 
+        // Disable Nagle's algorithm for low-latency messaging
+        stream.set_nodelay(true).ok();
+    
         // TLS handshake
         let tls_start = Instant::now();
         let server_name = ServerName::try_from("localhost".to_string())
@@ -219,6 +222,8 @@ impl TlsClient {
         &self, 
         stream: &mut ClientTlsStream<TcpStream>
     ) -> IdentityResult<(String, String, u64, u64, u64)> {
+        let t0 = Instant::now();
+        
         // Generate challenge for server
         let our_challenge = generate_challenge();
         
@@ -234,11 +239,11 @@ impl TlsClient {
         };
 
         send_message(stream, &hello).await?;
-        debug!("Sent DID auth hello with challenge");
+        println!("  [t+{}ms] Sent MSG 1 (ClientHello)", t0.elapsed().as_millis());
 
         // Receive server's hello (with their credential and response to our challenge)
         let server_hello: DIDAuthMessage = receive_message(stream).await?;
-        debug!(server_did = %server_hello.did, "Received server DID auth hello");
+        println!("  [t+{}ms] Received MSG 2 (ServerHello)", t0.elapsed().as_millis());
 
         // Verify server's credential
         let verify_start = Instant::now();
@@ -246,15 +251,17 @@ impl TlsClient {
             .verify_credential(&server_hello.credential_jwt, &server_hello.did)
             .await?;
         let credential_verify_ms = verify_start.elapsed().as_millis() as u64;
+        println!("  [t+{}ms] Credential verified (took {}ms)", t0.elapsed().as_millis(), credential_verify_ms);
         
         // Get server's public key
         let server_public_key = server_hello.public_key.ok_or_else(|| {
             IdentityError::DIDAuthenticationError("Server did not provide public key".into())
         })?;
         
-        // Verify that the server's public key is in their DID Document (prevents impersonation)
+        // Verify that the server's public key is in their DID Document
+        let binding_start = Instant::now();
         self.verifier.verify_public_key_binding(&server_hello.did, &server_public_key).await?;
-        debug!("Server public key binding verified against DID Document");
+        println!("  [t+{}ms] PK binding verified (took {}ms)", t0.elapsed().as_millis(), binding_start.elapsed().as_millis());
         
         // Verify server's response to our challenge
         let challenge_start = Instant::now();
@@ -269,7 +276,7 @@ impl TlsClient {
             ));
         }
         let challenge_response_ms = challenge_start.elapsed().as_millis() as u64;
-        debug!("Server challenge-response verified");
+        println!("  [t+{}ms] Challenge-response verified (took {}ms)", t0.elapsed().as_millis(), challenge_response_ms);
         
         // Sign server's challenge
         let server_challenge = server_hello.challenge.ok_or_else(|| {
@@ -291,10 +298,11 @@ impl TlsClient {
         };
         
         send_message(stream, &response_msg).await?;
-        debug!("Sent challenge response");
+        println!("  [t+{}ms] Sent MSG 3 (Response)", t0.elapsed().as_millis());
 
         // Wait for success/failure
         let result: DIDAuthMessage = receive_message(stream).await?;
+        println!("  [t+{}ms] Received MSG 4 (Success/Failure)", t0.elapsed().as_millis());
         
         if result.message_type != DIDAuthMessageType::Success {
             return Err(IdentityError::DIDAuthenticationError(
@@ -302,7 +310,6 @@ impl TlsClient {
             ));
         }
 
-        // Revocation check time is included in credential verification for now
         let revocation_check_ms = 0;
 
         Ok((
@@ -403,6 +410,9 @@ impl TlsServer {
             .map(|a| a.to_string())
             .unwrap_or_else(|_| "unknown".into());
 
+        // Disable Nagle's algorithm for low-latency messaging
+        stream.set_nodelay(true).ok();
+
         info!(peer = %peer_addr, "Accepting connection");
 
         // TLS handshake
@@ -450,9 +460,11 @@ impl TlsServer {
         &self, 
         stream: &mut ServerTlsStream<TcpStream>
     ) -> IdentityResult<(String, String, u64, u64, u64)> {
+        let t0 = Instant::now();
+        
         // Receive client's hello
         let client_hello: DIDAuthMessage = receive_message(stream).await?;
-        debug!(client_did = %client_hello.did, "Received client DID auth hello");
+        println!("  [SERVER t+{}ms] Received MSG 1 (ClientHello)", t0.elapsed().as_millis());
 
         // Verify client's credential
         let verify_start = Instant::now();
@@ -460,15 +472,17 @@ impl TlsServer {
             .verify_credential(&client_hello.credential_jwt, &client_hello.did)
             .await?;
         let credential_verify_ms = verify_start.elapsed().as_millis() as u64;
+        println!("  [SERVER t+{}ms] Credential verified (took {}ms)", t0.elapsed().as_millis(), credential_verify_ms);
         
         // Get client's public key
         let client_public_key = client_hello.public_key.ok_or_else(|| {
             IdentityError::DIDAuthenticationError("Client did not provide public key".into())
         })?;
         
-        // Verify that the client's public key is in their DID Document (prevents impersonation)
+        // Verify public key binding
+        let binding_start = Instant::now();
         self.verifier.verify_public_key_binding(&client_hello.did, &client_public_key).await?;
-        debug!("Client public key binding verified against DID Document");
+        println!("  [SERVER t+{}ms] PK binding verified (took {}ms)", t0.elapsed().as_millis(), binding_start.elapsed().as_millis());
         
         // Get client's challenge
         let client_challenge = client_hello.challenge.ok_or_else(|| {
@@ -494,10 +508,11 @@ impl TlsServer {
         };
 
         send_message(stream, &hello).await?;
-        debug!("Sent DID auth hello with challenge response");
+        println!("  [SERVER t+{}ms] Sent MSG 2 (ServerHello)", t0.elapsed().as_millis());
         
         // Receive client's response to our challenge
         let client_response: DIDAuthMessage = receive_message(stream).await?;
+        println!("  [SERVER t+{}ms] Received MSG 3 (Response)", t0.elapsed().as_millis());
         
         if client_response.message_type != DIDAuthMessageType::Response {
             return Err(IdentityError::DIDAuthenticationError(
@@ -513,7 +528,6 @@ impl TlsServer {
         
         let valid = verify_challenge_response(&our_challenge, &response, &client_public_key)?;
         if !valid {
-            // Send failure
             let failure = DIDAuthMessage {
                 message_type: DIDAuthMessageType::Failure,
                 did: self.server_did.clone(),
@@ -530,7 +544,7 @@ impl TlsServer {
             ));
         }
         let challenge_response_ms = challenge_start.elapsed().as_millis() as u64;
-        debug!("Client challenge-response verified");
+        println!("  [SERVER t+{}ms] Challenge verified (took {}ms)", t0.elapsed().as_millis(), challenge_response_ms);
 
         // Send success
         let success = DIDAuthMessage {
@@ -544,6 +558,7 @@ impl TlsServer {
         };
 
         send_message(stream, &success).await?;
+        println!("  [SERVER t+{}ms] Sent MSG 4 (Success)", t0.elapsed().as_millis());
 
         let revocation_check_ms = 0;
 

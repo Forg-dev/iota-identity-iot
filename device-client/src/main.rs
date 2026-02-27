@@ -92,6 +92,12 @@ enum Commands {
         /// Address to connect to (host:port)
         #[arg(long, short = 'a')]
         addr: String,
+        /// Repeated connections for warm-cache benchmark
+        #[arg(long, default_value_t = 1)]
+        repeat: usize,
+        /// Delay between repeated connections (ms)
+        #[arg(long, default_value_t = 3000)]
+        repeat_delay_ms: u64,
     },
 
     /// Start as a TLS server accepting connections
@@ -141,8 +147,8 @@ async fn main() -> Result<()> {
         Commands::Sign { message } => {
             sign_message(&config, &message).await?;
         }
-        Commands::Connect { addr } => {
-            connect_to_device(&config, &addr).await?;
+        Commands::Connect { addr, repeat, repeat_delay_ms } => {
+            connect_to_device(&config, &addr, repeat, repeat_delay_ms).await?;
         }
         Commands::Server { port } => {
             start_server(&config, port).await?;
@@ -249,8 +255,8 @@ async fn sign_message(config: &DeviceClientConfig, message: &str) -> Result<()> 
     Ok(())
 }
 
-async fn connect_to_device(config: &DeviceClientConfig, addr: &str) -> Result<()> {
-    info!(addr = %addr, "Connecting to device");
+async fn connect_to_device(config: &DeviceClientConfig, addr: &str, repeat: usize, repeat_delay_ms: u64) -> Result<()> {
+    info!(addr = %addr, repeat = repeat, "Connecting to device");
 
     let manager = IdentityManager::new(config).await?;
     
@@ -276,21 +282,38 @@ async fn connect_to_device(config: &DeviceClientConfig, addr: &str) -> Result<()
         config.tls.clone(),
     )?;
 
-    let connection = client.connect(addr).await?;
+    for i in 0..repeat {
+        if i > 0 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(repeat_delay_ms)).await;
+        }
 
-    println!("\n✓ Connected and authenticated!");
-    println!("  Peer DID: {}", connection.peer_did);
-    println!("  Peer Public Key: {}...", &connection.peer_public_key[..16]);
-    println!("\n  Metrics:");
-    println!("    TLS Handshake: {}ms", connection.metrics.tls_handshake_ms);
-    println!("    DID Auth: {}ms", connection.metrics.did_auth_ms);
-    println!("    Credential Verify: {}ms", connection.metrics.credential_verify_ms);
-    println!("    Challenge-Response: {}ms", connection.metrics.challenge_response_ms);
-    println!("    Total: {}ms", connection.metrics.total_ms);
+        match client.connect(addr).await {
+            Ok(connection) => {
+                if repeat > 1 {
+                    println!("[{}/{}] Connected and authenticated!", i + 1, repeat);
+                } else {
+                    println!("\n✓ Connected and authenticated!");
+                }
+                println!("  Peer DID: {}", connection.peer_did);
+                println!("  Peer Public Key: {}...", &connection.peer_public_key[..16]);
+                println!("\n  Metrics:");
+                println!("    TLS Handshake: {}ms", connection.metrics.tls_handshake_ms);
+                println!("    DID Auth: {}ms", connection.metrics.did_auth_ms);
+                println!("    Credential Verify: {}ms", connection.metrics.credential_verify_ms);
+                println!("    Challenge-Response: {}ms", connection.metrics.challenge_response_ms);
+                println!("    Total: {}ms", connection.metrics.total_ms);
 
-    // Keep connection open briefly
-    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-    println!("\nConnection closed.");
+                // Keep connection open briefly
+                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                if repeat == 1 {
+                    println!("\nConnection closed.");
+                }
+            }
+            Err(e) => {
+                println!("[{}/{}] Connection failed: {}", i + 1, repeat, e);
+            }
+        }
+    }
 
     Ok(())
 }
