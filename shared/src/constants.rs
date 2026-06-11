@@ -24,21 +24,24 @@ pub const IOTA_LOCAL_ENDPOINT: &str = "http://127.0.0.1:9000";
 // These are the deployed Move packages for Identity operations
 // =============================================================================
 
-/// Identity Package ID for IOTA Rebased Testnet
-/// This is REQUIRED for all identity operations on testnet
-pub const IOTA_IDENTITY_PKG_ID_TESTNET: &str = 
-    "0x222741bbdff74b42df48a7b4733185e9b24becb8ccfbafe8eac864ab4e4cc555";
+/// Identity Package ID for IOTA Rebased Testnet (latest version)
+/// chain_id: 2304aa97
+pub const IOTA_IDENTITY_PKG_ID_TESTNET: &str =
+    "0x29359d33a2e84f04407da0d6cff15dd8ad271c75493ef6b78f381993e4c0abb0";
 
-/// Identity Package ID for IOTA Rebased Devnet
-/// Note: This may change with redeployments
-pub const IOTA_IDENTITY_PKG_ID_DEVNET: &str = 
-    "0x222741bbdff74b42df48a7b4733185e9b24becb8ccfbafe8eac864ab4e4cc555";
+/// Identity Package ID for IOTA Rebased Devnet (latest version)
+/// chain_id: daf90477 — devnet is reset periodically; update when chain ID changes
+pub const IOTA_IDENTITY_PKG_ID_DEVNET: &str =
+    "0x8896ab04fe24c044c54925df3f8a7c383a8d1d6f6bbb95d1c57cfa94c75e520d";
 
 // =============================================================================
 // IOTA REBASED FAUCET ENDPOINTS (for testnet/devnet)
 // =============================================================================
 
-/// Faucet endpoint for testnet
+/// Faucet endpoint for testnet.
+/// NOTE: as of 2025/2026 the testnet faucet requires a CAPTCHA token and the
+/// /gas path returns HTTP 405. Programmatic requests will fail gracefully with a
+/// warning; fund the wallet manually at https://faucet.testnet.iota.cafe
 pub const IOTA_FAUCET_TESTNET: &str = "https://faucet.testnet.iota.cafe/gas";
 
 /// Faucet endpoint for devnet

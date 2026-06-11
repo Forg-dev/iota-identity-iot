@@ -162,13 +162,19 @@ impl CredentialIssuer {
         if !identity_file.exists() {
             return Ok(None);
         }
-        
+
         let content = std::fs::read_to_string(&identity_file)
             .map_err(|e| IdentityError::StorageIOError(format!("Failed to read issuer identity: {}", e)))?;
-        
+
         let identity: IssuerIdentity = serde_json::from_str(&content)
             .map_err(|e| IdentityError::StorageIOError(format!("Failed to parse issuer identity: {}", e)))?;
-        
+
+        // Skip incomplete entries written as pre-faucet safeguard
+        if identity.did == "pending" {
+            warn!("Found pending issuer identity (DID not yet assigned); skipping load");
+            return Ok(None);
+        }
+
         Ok(Some(identity))
     }
     
@@ -242,6 +248,12 @@ impl CredentialIssuer {
     /// Get the issuer's public key as hex string (for creating DID on-chain)
     pub fn public_key_hex(&self) -> String {
         hex::encode(self.signing_key.verifying_key().as_bytes())
+    }
+
+    /// Get the issuer's private signing key as hex string
+    /// Used to persist state before faucet requests so the key is not lost on failure
+    pub fn signing_key_hex(&self) -> String {
+        hex::encode(self.signing_key.to_bytes())
     }
 
     /// Issue a Verifiable Credential for a device

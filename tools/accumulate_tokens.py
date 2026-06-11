@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """
-IOTA Testnet Faucet Accumulator
+IOTA Faucet Accumulator (testnet / devnet)
 
-Automatically requests tokens from the IOTA testnet faucet,
+Automatically requests tokens from the IOTA faucet,
 managing cooldowns and tracking progress toward a target balance.
 
 Usage:
-    python3 accumulate_tokens.py                    # Use default address from issuer_identity.json
-    python3 accumulate_tokens.py --target 200       # Accumulate until 200 IOTA
-    python3 accumulate_tokens.py --address 0x...    # Use specific address
-    python3 accumulate_tokens.py --requests 20      # Make exactly 20 requests
+    python3 accumulate_tokens.py                       # devnet, address from issuer_identity.json
+    python3 accumulate_tokens.py --network devnet      # explicit devnet (default)
+    python3 accumulate_tokens.py --network testnet     # testnet (faucet requires manual CAPTCHA)
+    python3 accumulate_tokens.py --target 200          # Accumulate until 200 IOTA
+    python3 accumulate_tokens.py --address 0x...       # Use specific address
+    python3 accumulate_tokens.py --requests 20         # Make exactly 20 requests
 """
 
 import argparse
@@ -25,19 +27,28 @@ except ImportError:
     print("ERROR: 'requests' library not found. Install with: pip install requests")
     sys.exit(1)
 
-# Constants
-FAUCET_URL = "https://faucet.testnet.iota.cafe/gas"
-RPC_URL = "https://api.testnet.iota.cafe"
+# Network configs
+NETWORKS = {
+    "devnet": {
+        "faucet": "https://faucet.devnet.iota.cafe/gas",
+        "rpc":    "https://api.devnet.iota.cafe",
+    },
+    "testnet": {
+        "faucet": "https://faucet.testnet.iota.cafe/gas",  # requires CAPTCHA — will fail
+        "rpc":    "https://api.testnet.iota.cafe",
+    },
+}
+DEFAULT_NETWORK = "devnet"
+
 NANOS_PER_IOTA = 1_000_000_000
 DEFAULT_ISSUER_FILE = Path.home() / ".iota-identity-service" / "issuer_identity.json"
 
-# Faucet gives ~1 IOTA per request, cooldown is ~60 seconds
-TOKENS_PER_REQUEST = 19.0  # IOTA
-COOLDOWN_SECONDS = 3  # Add buffer to be safe
+TOKENS_PER_REQUEST = 10.0  # IOTA (devnet gives 10 IOTA per request)
+COOLDOWN_SECONDS = 3
 DEFAULT_TARGET_IOTA = 100
 
 
-def get_balance(address: str) -> tuple[float, int]:
+def get_balance(address: str, rpc_url: str) -> tuple[float, int]:
     """Get balance for an address. Returns (balance_iota, coin_count)."""
     payload = {
         "jsonrpc": "2.0",
@@ -45,9 +56,9 @@ def get_balance(address: str) -> tuple[float, int]:
         "method": "iotax_getBalance",
         "params": [address]
     }
-    
+
     try:
-        response = requests.post(RPC_URL, json=payload, timeout=30)
+        response = requests.post(rpc_url, json=payload, timeout=30)
         response.raise_for_status()
         result = response.json().get("result", {})
         total_balance = int(result.get("totalBalance", 0))
@@ -58,26 +69,28 @@ def get_balance(address: str) -> tuple[float, int]:
         return -1, 0
 
 
-def request_faucet(address: str) -> tuple[bool, str]:
+def request_faucet(address: str, faucet_url: str) -> tuple[bool, str]:
     """Request tokens from faucet. Returns (success, message)."""
     payload = {
         "FixedAmountRequest": {
             "recipient": address
         }
     }
-    
+
     try:
         response = requests.post(
-            FAUCET_URL,
+            faucet_url,
             json=payload,
             headers={"Content-Type": "application/json"},
             timeout=30
         )
-        
-        if response.status_code == 200:
+
+        if response.status_code in (200, 201):
             return True, "Success"
+        elif response.status_code == 405:
+            return False, "HTTP 405 — faucet rimosso (testnet richiede CAPTCHA manuale)"
         elif response.status_code == 429:
-            return False, "Rate limited - waiting for cooldown"
+            return False, "Rate limited - aspetta il cooldown"
         else:
             return False, f"HTTP {response.status_code}: {response.text[:100]}"
     except requests.exceptions.Timeout:
@@ -91,26 +104,27 @@ def derive_address_from_issuer_file(filepath: Path) -> str:
     try:
         from hashlib import blake2b
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
     except ImportError:
         print("ERROR: Required libraries not found. Install with:")
         print("  pip install cryptography")
         sys.exit(1)
-    
+
     with open(filepath) as f:
         data = json.load(f)
-    
+
     tx_key_hex = data.get("tx_key_hex")
     if not tx_key_hex:
         raise ValueError("No tx_key_hex found in issuer_identity.json")
-    
-    # Derive public key
+
+    # Derive public key (32 raw bytes)
     private_key_bytes = bytes.fromhex(tx_key_hex)
     private_key = Ed25519PrivateKey.from_private_bytes(private_key_bytes)
-    public_key_bytes = private_key.public_key().public_bytes_raw()
-    
-    # Hash with Blake2b-256 (no flag byte)
+    public_key_bytes = private_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+
+    # IOTA address = Blake2b-256 of the public key bytes
     address_bytes = blake2b(public_key_bytes, digest_size=32).digest()
-    
+
     return f"0x{address_bytes.hex()}"
 
 
@@ -141,7 +155,13 @@ def print_progress_bar(current: float, target: float, width: int = 40):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Accumulate IOTA tokens from testnet faucet"
+        description="Accumulate IOTA tokens from faucet (devnet/testnet)"
+    )
+    parser.add_argument(
+        "--network", "-n",
+        choices=list(NETWORKS.keys()),
+        default=DEFAULT_NETWORK,
+        help=f"Network to use (default: {DEFAULT_NETWORK})",
     )
     parser.add_argument(
         "--address", "-a",
@@ -177,7 +197,16 @@ def main():
     )
     
     args = parser.parse_args()
-    
+
+    network = NETWORKS[args.network]
+    faucet_url = network["faucet"]
+    rpc_url = network["rpc"]
+
+    if args.network == "testnet":
+        print("ATTENZIONE: il faucet testnet richiede CAPTCHA e non può essere usato automaticamente.")
+        print("Usa --network devnet oppure finanzia manualmente su https://faucet.testnet.iota.cafe")
+        sys.exit(1)
+
     # Get address
     if args.address:
         address = args.address
@@ -197,13 +226,14 @@ def main():
     print("║           IOTA Testnet Token Accumulator                       ║")
     print("╚════════════════════════════════════════════════════════════════╝")
     print()
-    print(f"  Address: {address}")
-    print(f"  Faucet:  {FAUCET_URL}")
+    print(f"  Network:  {args.network}")
+    print(f"  Address:  {address}")
+    print(f"  Faucet:   {faucet_url}")
     print(f"  Cooldown: {args.cooldown} seconds between requests")
     print()
     
     # Check initial balance
-    initial_balance, coin_count = get_balance(address)
+    initial_balance, coin_count = get_balance(address, rpc_url)
     if initial_balance < 0:
         print("ERROR: Could not check initial balance")
         sys.exit(1)
@@ -265,7 +295,7 @@ def main():
             if not args.quiet:
                 print(f"[{timestamp}] Request #{request_count}...", end=" ", flush=True)
             
-            success, message = request_faucet(address)
+            success, message = request_faucet(address, faucet_url)
             
             if success:
                 success_count += 1
@@ -276,7 +306,7 @@ def main():
                 time.sleep(3)
                 
                 # Check new balance
-                new_balance, coin_count = get_balance(address)
+                new_balance, coin_count = get_balance(address, rpc_url)
                 if new_balance >= 0:
                     gained = new_balance - current_balance
                     current_balance = new_balance
@@ -311,7 +341,7 @@ def main():
     
     # Final summary
     elapsed = time.time() - start_time
-    final_balance, coin_count = get_balance(address)
+    final_balance, coin_count = get_balance(address, rpc_url)
     if final_balance < 0:
         final_balance = current_balance
     

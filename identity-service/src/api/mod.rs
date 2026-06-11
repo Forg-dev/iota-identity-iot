@@ -482,11 +482,13 @@ async fn initialize_issuer_did(
     }
 
     let public_key_hex = state.credential_issuer.public_key_hex();
+    let signing_key_hex = state.credential_issuer.signing_key_hex();
+    let storage_path = state.storage_path.as_deref();
     info!(public_key = %public_key_hex, "Using CredentialIssuer's public key for issuer DID");
 
     match state
         .did_manager
-        .create_issuer_did_with_key(&public_key_hex)
+        .create_issuer_did_with_key(&public_key_hex, &signing_key_hex, storage_path)
         .await
     {
         Ok(creation_result) => {

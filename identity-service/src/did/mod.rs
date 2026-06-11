@@ -36,7 +36,7 @@ use identity_iota::verification::jwk::Jwk;
 use identity_iota::iota::rebased::client::{IdentityClient, IdentityClientReadOnly};
 
 // Faucet utility for testnet/devnet
-use identity_iota::iota::rebased::utils::request_funds;
+// old version use identity_iota::iota::rebased::utils::request_funds;
 
 // IotaClientBuilder via re-export
 use identity_iota::iota_interaction::IotaClientBuilder;
@@ -60,6 +60,9 @@ const GAS_BUDGET_PUBLISH_DID: u64 = 50_000_000;
 
 /// Gas budget for updating/deactivating a DID document
 const GAS_BUDGET_UPDATE_DID: u64 = 50_000_000;
+
+/// Minimum wallet balance required before attempting a transaction (0.1 IOTA in nanos)
+const MIN_BALANCE_NANOS: u64 = 100_000_000;
 
 /// Information about a DID's control key stored for later operations
 #[derive(Debug, Clone)]
@@ -98,12 +101,15 @@ pub struct DIDManager {
     
     /// Network configuration
     network: IotaNetwork,
-    
+
     /// RPC endpoint
     endpoint: String,
-    
+
     /// Identity Package ID
     package_id: String,
+
+    /// Faucet URL for this network (None on mainnet)
+    faucet_url: Option<String>,
 }
 
 /// Result of creating an issuer DID, including the transaction key for persistence
@@ -154,6 +160,7 @@ impl DIDManager {
             issuer_tx_public_jwk: RwLock::new(None),
             did_control_info: RwLock::new(HashMap::new()),
             network: config.network,
+            faucet_url: config.network.faucet_url().map(String::from),
             endpoint,
             package_id,
         })
@@ -353,35 +360,34 @@ impl DIDManager {
         // Get sender address from the identity client
         let sender_address = identity_client.address();
         
-        // Check balance before requesting funds
-        // Minimum balance required: 0.1 IOTA (100_000_000 NANOS)
-        const MIN_BALANCE_NANOS: u64 = 100_000_000;
-        
         let current_balance = Self::check_balance(&self.endpoint, &sender_address).await;
-        
+
         info!(
-            sender_address = %sender_address, 
+            sender_address = %sender_address,
             balance_nanos = current_balance,
             balance_iota = current_balance as f64 / 1_000_000_000.0,
             "Checking wallet balance"
         );
 
-        // Request funds from faucet only if balance is too low (testnet/devnet only)
-        if self.network.has_faucet() && current_balance < MIN_BALANCE_NANOS {
-            info!("Balance too low, requesting funds from faucet");
-            request_funds(&sender_address)
-                .await
-                .map_err(|e| IdentityError::FaucetError(format!(
-                    "Failed to request funds: {}", e
-                )))?;
-
-            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-            debug!("Funds received from faucet");
-        } else if current_balance >= MIN_BALANCE_NANOS {
-            debug!(
-                balance_iota = current_balance as f64 / 1_000_000_000.0,
-                "Sufficient balance, skipping faucet request"
-            );
+        if let Some(ref faucet_url) = self.faucet_url {
+            if current_balance < MIN_BALANCE_NANOS {
+                info!("Balance too low, requesting funds from faucet");
+                if let Err(e) = request_funds(faucet_url, &sender_address).await {
+                    warn!(
+                        address = %sender_address,
+                        error = %e,
+                        "Faucet request failed — fund the wallet manually at https://faucet.testnet.iota.cafe or https://faucet.devnet.iota.cafe"
+                    );
+                } else {
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                    debug!("Funds received from faucet");
+                }
+            } else {
+                debug!(
+                    balance_iota = current_balance as f64 / 1_000_000_000.0,
+                    "Sufficient balance, skipping faucet request"
+                );
+            }
         }
 
         // Create unpublished DID Document
@@ -547,17 +553,23 @@ impl DIDManager {
         // Create identity client and get sender address
         let (identity_client, sender_address) = self.create_identity_client_for_did(&control_info).await?;
         
-        // Request funds using the sender address
-        if self.network.has_faucet() {
-            info!(sender_address = %sender_address, "Requesting funds for deactivation");
-            request_funds(&sender_address)
-                .await
-                .map_err(|e| IdentityError::FaucetError(format!(
-                    "Failed to request funds: {}", e
-                )))?;
-            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        // Request funds only if balance is insufficient
+        if let Some(ref faucet_url) = self.faucet_url {
+            let current_balance = Self::check_balance(&self.endpoint, &sender_address).await;
+            if current_balance < MIN_BALANCE_NANOS {
+                info!(sender_address = %sender_address, "Balance low, requesting funds for deactivation");
+                if let Err(e) = request_funds(faucet_url, &sender_address).await {
+                    warn!(
+                        address = %sender_address,
+                        error = %e,
+                        "Faucet request failed — fund the wallet manually"
+                    );
+                } else {
+                    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                }
+            }
         }
-        
+
         info!("Publishing deactivation to IOTA Rebased...");
         
         identity_client
@@ -630,17 +642,23 @@ impl DIDManager {
         // Create identity client and get sender address
         let (identity_client, sender_address) = self.create_identity_client_for_did(&control_info).await?;
         
-        // Request funds using the sender address
-        if self.network.has_faucet() {
-            info!(sender_address = %sender_address, "Requesting funds for key rotation");
-            request_funds(&sender_address)
-                .await
-                .map_err(|e| IdentityError::FaucetError(format!(
-                    "Failed to request funds: {}", e
-                )))?;
-            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        // Request funds only if balance is insufficient
+        if let Some(ref faucet_url) = self.faucet_url {
+            let current_balance = Self::check_balance(&self.endpoint, &sender_address).await;
+            if current_balance < MIN_BALANCE_NANOS {
+                info!(sender_address = %sender_address, "Balance low, requesting funds for key rotation");
+                if let Err(e) = request_funds(faucet_url, &sender_address).await {
+                    warn!(
+                        address = %sender_address,
+                        error = %e,
+                        "Faucet request failed — fund the wallet manually"
+                    );
+                } else {
+                    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                }
+            }
         }
-        
+
         // Create JWK from the provided public key
         let new_jwk = create_ed25519_jwk_from_bytes(&new_public_key_bytes)?;
         
@@ -814,17 +832,23 @@ impl DIDManager {
         // Create identity client for publishing
         let (identity_client, sender_address) = self.create_identity_client_for_did(&control_info).await?;
         
-        // Request funds if needed
-        if self.network.has_faucet() {
-            info!(sender_address = %sender_address, "Requesting funds for revocation bitmap update");
-            request_funds(&sender_address)
-                .await
-                .map_err(|e| IdentityError::FaucetError(format!(
-                    "Failed to request funds: {}", e
-                )))?;
-            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        // Request funds only if balance is insufficient
+        if let Some(ref faucet_url) = self.faucet_url {
+            let current_balance = Self::check_balance(&self.endpoint, &sender_address).await;
+            if current_balance < MIN_BALANCE_NANOS {
+                info!(sender_address = %sender_address, "Balance low, requesting funds for revocation bitmap update");
+                if let Err(e) = request_funds(faucet_url, &sender_address).await {
+                    warn!(
+                        address = %sender_address,
+                        error = %e,
+                        "Faucet request failed — fund the wallet manually"
+                    );
+                } else {
+                    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                }
+            }
         }
-        
+
         // Publish the updated document
         info!("Publishing RevocationBitmap2022 update to IOTA Rebased...");
         
@@ -972,7 +996,16 @@ impl DIDManager {
     /// Create issuer DID on-chain using a specific public key
     /// This ensures the DID Document contains the same key used for signing credentials
     /// Returns the DID and the transaction key needed to control it
-    pub async fn create_issuer_did_with_key(&self, public_key_hex: &str) -> IdentityResult<IssuerCreationResult> {
+    ///
+    /// `signing_key_hex` and `storage_path` are used to persist a partial
+    /// `issuer_identity.json` (with `did = "pending"`) **before** the faucet
+    /// request, so the tx_key is not lost if a later step fails.
+    pub async fn create_issuer_did_with_key(
+        &self,
+        public_key_hex: &str,
+        signing_key_hex: &str,
+        storage_path: Option<&std::path::Path>,
+    ) -> IdentityResult<IssuerCreationResult> {
         // Check if already initialized
         {
             let guard = self.issuer_did.read();
@@ -1073,16 +1106,42 @@ impl DIDManager {
 
         // Get sender address and request funds
         let sender_address = identity_client.address();
-        
-        info!(sender_address = %sender_address, "Requesting funds from faucet for issuer DID");
 
-        if self.network.has_faucet() {
-            request_funds(&sender_address)
-                .await
-                .map_err(|e| IdentityError::FaucetError(format!(
-                    "Failed to request funds: {}", e
-                )))?;
-            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        // Persist the tx_key BEFORE calling the faucet so it is recoverable even
+        // if the DID publishing step fails afterwards.
+        if !signing_key_hex.is_empty() {
+            if let Some(path) = storage_path {
+                persist_pending_issuer_identity(
+                    path,
+                    signing_key_hex,
+                    &tx_private_key_hex_for_storage,
+                );
+            }
+        }
+
+        let current_balance = Self::check_balance(&self.endpoint, &sender_address).await;
+        info!(
+            sender_address = %sender_address,
+            balance_nanos = current_balance,
+            balance_iota = current_balance as f64 / 1_000_000_000.0,
+            "Checking issuer wallet balance before faucet request"
+        );
+
+        if let Some(ref faucet_url) = self.faucet_url {
+            if current_balance < MIN_BALANCE_NANOS {
+                info!(sender_address = %sender_address, "Balance too low, requesting funds from faucet for issuer DID");
+                if let Err(e) = request_funds(faucet_url, &sender_address).await {
+                    warn!(
+                        address = %sender_address,
+                        error = %e,
+                        "Faucet request failed — fund the issuer wallet manually at https://faucet.testnet.iota.cafe (testnet) or https://faucet.devnet.iota.cafe (devnet)"
+                    );
+                } else {
+                    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                }
+            } else {
+                debug!("Sufficient balance, skipping faucet request for issuer DID");
+            }
         }
 
         // Create unpublished DID Document
@@ -1164,9 +1223,74 @@ impl DIDManager {
     }
 }
 
+/// Request funds from the network faucet.
+/// faucet_url should be the network-specific endpoint (e.g. https://faucet.devnet.iota.cafe/gas).
+/// NOTE: The IOTA testnet faucet (/gas) now returns HTTP 405; callers treat failure as a warning.
+async fn request_funds(faucet_url: &str, address: &IotaAddress) -> Result<(), IdentityError> {
+    let client = reqwest::Client::new();
+    let response = client
+        .post(faucet_url)
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({
+            "FixedAmountRequest": {
+                "recipient": address.to_string()
+            }
+        }))
+        .send()
+        .await
+        .map_err(|e| IdentityError::FaucetError(format!("HTTP request failed: {}", e)))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let error_text = response.text().await.unwrap_or_default();
+        return Err(IdentityError::FaucetError(format!(
+            "Faucet request was unsuccessful (HTTP {}): {}", status, error_text
+        )));
+    }
+
+    Ok(())
+}
+
 // =============================================================================
 // HELPER FUNCTIONS
 // =============================================================================
+
+/// Write a partial `issuer_identity.json` with `did = "pending"` so that the
+/// `tx_key_hex` (and the credential `signing_key_hex`) are recoverable if the
+/// DID-publishing step fails after the faucet has already been called.
+///
+/// The file is ignored on startup (the loader skips entries where `did == "pending"`).
+/// It will be overwritten by the full entry once the DID is created successfully.
+fn persist_pending_issuer_identity(
+    storage_path: &std::path::Path,
+    signing_key_hex: &str,
+    tx_key_hex: &str,
+) {
+    if let Err(e) = std::fs::create_dir_all(storage_path) {
+        warn!("Could not create storage directory for pending identity: {}", e);
+        return;
+    }
+
+    let identity = serde_json::json!({
+        "did": "pending",
+        "signing_key_hex": signing_key_hex,
+        "tx_key_hex": tx_key_hex,
+        "next_revocation_index": null,
+        "created_at": chrono::Utc::now().to_rfc3339(),
+    });
+
+    let identity_file = storage_path.join("issuer_identity.json");
+    match serde_json::to_string_pretty(&identity) {
+        Ok(content) => {
+            if let Err(e) = std::fs::write(&identity_file, content) {
+                warn!("Failed to write pending issuer identity: {}", e);
+            } else {
+                info!(path = ?identity_file, "Persisted pending issuer identity (tx_key safeguard before faucet)");
+            }
+        }
+        Err(e) => warn!("Failed to serialize pending issuer identity: {}", e),
+    }
+}
 
 /// Extract the private key from a JWK (the 'd' parameter)
 /// Returns the private key as a hex string

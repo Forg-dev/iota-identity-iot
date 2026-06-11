@@ -46,6 +46,8 @@ pub struct AppState {
     pub revocation_manager: std::sync::Arc<revocation::RevocationManager>,
     /// On-chain Revocation Manager using RevocationBitmap2022
     pub onchain_revocation_manager: std::sync::Arc<revocation::OnChainRevocationManager>,
+    /// Storage path for issuer identity persistence
+    pub storage_path: Option<std::path::PathBuf>,
 }
 
 // Debug: Check if types are Send + Sync

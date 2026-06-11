@@ -107,6 +107,7 @@ async fn main() -> Result<()> {
         cache: Arc::clone(&cache),
         revocation_manager: Arc::clone(&revocation_manager),
         onchain_revocation_manager: Arc::clone(&onchain_revocation_manager),
+        storage_path: Some(storage_path.clone()),
     });
 
     // Create router with shared state
