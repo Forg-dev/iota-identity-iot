@@ -39,6 +39,9 @@ benchmarks/output/
 *.crt
 *.pfx
 
+# Allow the pre-funded seed identity committed for reproducible thesis demo
+!tools/seed/issuer_identity.json
+
 # Build artifacts
 dist/
 build/
