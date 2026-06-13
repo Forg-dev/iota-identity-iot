@@ -1031,10 +1031,33 @@ impl DIDManager {
             ));
         }
 
-        // Generate a transaction signing key manually (so we have access to the private key)
-        // This is different from the credential signing key
+        // Generate (or reuse) a transaction signing key.  If a previous call to this function
+        // wrote a "pending" entry to disk before failing (e.g. because the faucet rejected the
+        // request), we reload that key so the *same* sender address is used on every retry.
+        // This is essential when the user funds the address manually between attempts.
         use base64::Engine;
-        let tx_signing_key = ed25519_dalek::SigningKey::generate(&mut rand::thread_rng());
+        let tx_signing_key = {
+            let reused = storage_path.and_then(|p| try_load_pending_tx_key(p));
+            match reused.as_deref() {
+                Some(hex_str) => {
+                    match hex::decode(hex_str)
+                        .ok()
+                        .and_then(|b: Vec<u8>| b.try_into().ok())
+                        .map(|arr: [u8; 32]| ed25519_dalek::SigningKey::from_bytes(&arr))
+                    {
+                        Some(key) => {
+                            info!("Reusing pending tx key from a previous failed attempt (issuer address preserved for manual funding)");
+                            key
+                        }
+                        None => {
+                            warn!("Pending tx key is malformed; generating a fresh one");
+                            ed25519_dalek::SigningKey::generate(&mut rand::thread_rng())
+                        }
+                    }
+                }
+                None => ed25519_dalek::SigningKey::generate(&mut rand::thread_rng()),
+            }
+        };
         let tx_verifying_key = tx_signing_key.verifying_key();
         
         // Create JWK with private key ('d' parameter) and algorithm
@@ -1130,11 +1153,23 @@ impl DIDManager {
         if let Some(ref faucet_url) = self.faucet_url {
             if current_balance < MIN_BALANCE_NANOS {
                 info!(sender_address = %sender_address, "Balance too low, requesting funds from faucet for issuer DID");
-                if let Err(e) = request_funds(faucet_url, &sender_address).await {
+                if let Err(faucet_err) = request_funds(faucet_url, &sender_address).await {
+                    // Re-check balance in case it was funded independently (e.g. manual transfer)
+                    let post_faucet_balance = Self::check_balance(&self.endpoint, &sender_address).await;
+                    if post_faucet_balance < MIN_BALANCE_NANOS {
+                        return Err(IdentityError::FaucetError(format!(
+                            "Insufficient balance and faucet unavailable. \
+                             Issuer address: {}. \
+                             Fund this address with at least 0.1 IOTA on testnet, \
+                             then retry POST /api/v1/issuer/initialize \
+                             (this address is stable across retries and service restarts). \
+                             Faucet error: {}",
+                            sender_address, faucet_err
+                        )));
+                    }
                     warn!(
                         address = %sender_address,
-                        error = %e,
-                        "Faucet request failed — fund the issuer wallet manually at https://faucet.testnet.iota.cafe (testnet) or https://faucet.devnet.iota.cafe (devnet)"
+                        "Faucet request failed but sufficient balance found; proceeding"
                     );
                 } else {
                     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
@@ -1290,6 +1325,56 @@ fn persist_pending_issuer_identity(
         }
         Err(e) => warn!("Failed to serialize pending issuer identity: {}", e),
     }
+}
+
+/// If a previous `create_issuer_did_with_key` call wrote a `did = "pending"` entry before
+/// failing, return the stored `tx_key_hex` so the same sender address can be reused.
+fn try_load_pending_tx_key(storage_path: &std::path::Path) -> Option<String> {
+    let identity_file = storage_path.join("issuer_identity.json");
+
+    let content = match std::fs::read_to_string(&identity_file) {
+        Ok(s) => s,
+        Err(e) => {
+            debug!("No pending tx key file ({}): {}", identity_file.display(), e);
+            return None;
+        }
+    };
+
+    let json: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!("Pending identity file is not valid JSON: {}", e);
+            return None;
+        }
+    };
+
+    let did_val = match json.get("did").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => {
+            warn!("Pending identity file has no string 'did' field");
+            return None;
+        }
+    };
+
+    if did_val != "pending" {
+        debug!("Identity file has did='{}', not 'pending'; skipping reuse", did_val);
+        return None;
+    }
+
+    let tx_key_hex = match json.get("tx_key_hex").and_then(|v| v.as_str()) {
+        Some(s) if !s.is_empty() => s.to_string(),
+        Some(_) => {
+            warn!("Pending identity file has empty tx_key_hex");
+            return None;
+        }
+        None => {
+            warn!("Pending identity file has no string 'tx_key_hex' field");
+            return None;
+        }
+    };
+
+    info!("Found pending issuer tx key in storage (will reuse to preserve the funded address)");
+    Some(tx_key_hex)
 }
 
 /// Extract the private key from a JWK (the 'd' parameter)

@@ -554,6 +554,11 @@ async fn initialize_issuer_did(
         }
         Err(e) => {
             error!("Failed to create issuer DID: {}", e);
+            // FaucetError messages are actionable (contain the issuer address to fund),
+            // so surface them directly rather than hiding them behind "Internal server error".
+            if matches!(e, IdentityError::FaucetError(_)) {
+                return Err(ApiError::BadRequest(e.to_string()));
+            }
             Err(ApiError::Internal(format!(
                 "Failed to create issuer DID: {}",
                 e
