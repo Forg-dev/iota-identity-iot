@@ -173,7 +173,7 @@ def main():
      -d '{{"jsonrpc":"2.0","id":1,"method":"iotax_getBalance","params":["{address}"]}}' | jq .result''')
     
     print("\n2. Request funds from faucet (gives ~10 IOTA each):")
-    print(f'''   curl -s --location --request POST 'https://faucet.testnet.iota.cafe/gas' \\
+    print(f'''   curl -s --location --request POST 'https://faucet.testnet.iota.cafe/v1/gas' \\
      --header 'Content-Type: application/json' \\
      --data-raw '{{"FixedAmountRequest":{{"recipient":"{address}"}}}}' | jq .''')
 

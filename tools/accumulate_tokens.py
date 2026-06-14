@@ -30,11 +30,11 @@ except ImportError:
 # Network configs
 NETWORKS = {
     "devnet": {
-        "faucet": "https://faucet.devnet.iota.cafe/gas",
+        "faucet": "https://faucet.devnet.iota.cafe/v1/gas",
         "rpc":    "https://api.devnet.iota.cafe",
     },
     "testnet": {
-        "faucet": "https://faucet.testnet.iota.cafe/gas",  # requires CAPTCHA — will fail
+        "faucet": "https://faucet.testnet.iota.cafe/v1/gas",  # requires CAPTCHA — will fail
         "rpc":    "https://api.testnet.iota.cafe",
     },
 }

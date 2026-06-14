@@ -1259,7 +1259,7 @@ impl DIDManager {
 }
 
 /// Request funds from the network faucet.
-/// faucet_url should be the network-specific endpoint (e.g. https://faucet.devnet.iota.cafe/gas).
+/// faucet_url should be the network-specific endpoint (e.g. https://faucet.devnet.iota.cafe/v1/gas).
 /// NOTE: The IOTA testnet faucet (/gas) now returns HTTP 405; callers treat failure as a warning.
 async fn request_funds(faucet_url: &str, address: &IotaAddress) -> Result<(), IdentityError> {
     let client = reqwest::Client::new();

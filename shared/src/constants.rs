@@ -38,14 +38,11 @@ pub const IOTA_IDENTITY_PKG_ID_DEVNET: &str =
 // IOTA REBASED FAUCET ENDPOINTS (for testnet/devnet)
 // =============================================================================
 
-/// Faucet endpoint for testnet.
-/// NOTE: as of 2025/2026 the testnet faucet requires a CAPTCHA token and the
-/// /gas path returns HTTP 405. Programmatic requests will fail gracefully with a
-/// warning; fund the wallet manually at https://faucet.testnet.iota.cafe
-pub const IOTA_FAUCET_TESTNET: &str = "https://faucet.testnet.iota.cafe/gas";
+/// Faucet endpoint for testnet (v1 API).
+pub const IOTA_FAUCET_TESTNET: &str = "https://faucet.testnet.iota.cafe/v1/gas";
 
-/// Faucet endpoint for devnet
-pub const IOTA_FAUCET_DEVNET: &str = "https://faucet.devnet.iota.cafe/gas";
+/// Faucet endpoint for devnet (v1 API)
+pub const IOTA_FAUCET_DEVNET: &str = "https://faucet.devnet.iota.cafe/v1/gas";
 
 /// Faucet endpoint for localnet
 pub const IOTA_FAUCET_LOCAL: &str = "http://127.0.0.1:9123/gas";
